@@ -50,7 +50,7 @@ test('429 responses activate provider-wide cooldown without retry storms', async
     const second = await getTokenMarkets(['RateLimitMint222222222222222222222222222222']);
     assert.ok(first.get('RateLimitMint111111111111111111111111111111').error);
     assert.ok(second.get('RateLimitMint222222222222222222222222222222').error);
-    assert.equal(calls, 2); // one DexScreener batch plus one bounded DexPaprika fallback
+    assert.equal(calls, 3); // initial batch, first fallback, then fallback-only retry during cooldown
   } finally {
     globalThis.fetch = originalFetch;
   }
