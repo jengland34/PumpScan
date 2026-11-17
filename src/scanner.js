@@ -22,28 +22,28 @@ export function scoreCandidate(market, report, history = [], config = {}) {
   const model=age!==null&&age<=cfg.newLaunchMaxAgeHours?'new_launch':'established';
   const levels=(report?.risks||[]).map(x=>String(x.level||'').toLowerCase());
   const risk=Number.isFinite(report?.scoreNormalised)?report.scoreNormalised:null;
-  const checks={price:Number.isFinite(market.priceUsd)&&market.priceUsd>0,liquidity:Number(market.liquidityUsd)>=cfg.minLiquidityUsd,security:report?.available===true&&risk!==null&&risk<cfg.maxRiskScore&&!levels.some(x=>['danger','critical'].includes(x)),age:age!==null&&age>=0&&age<=cfg.maxPairAgeHours,minimumActivity:Number(market.volume5mUsd)>=cfg.minVolume5mUsd};
+  const checks={price:Number.isFinite(market.priceUsd)&&market.priceUsd>0,liquidity:Number(market.liquidityUsd)>=cfg.minLiquidityUsd,security:report?.available===true&&risk!==null&&risk<cfg.maxRiskScore&&!levels.some(x=>['danger','critical'].includes(x)),age:age!==null&&age>=0&&age<=cfg.maxPairAgeHours,minimumActivity:Number.isFinite(Number(market.volume5mUsd))&&Number(market.volume5mUsd)>=cfg.minVolume5mUsd};
   const prev=history.length?history[history.length-1]:null;
-  const va=prev?ratio(market.volume5mUsd,prev.volume5mUsd):null, ba=prev?ratio(market.buys5m,prev.buys5m):null;
+  const va=prev&&Number.isFinite(Number(market.volume5mUsd))?ratio(Number(market.volume5mUsd),Number(prev.volume5mUsd)):null, ba=prev&&Number.isFinite(Number(market.buys5m))?ratio(Number(market.buys5m),Number(prev.buys5m)):null;
   const lc=prev&&prev.liquidityUsd>0?(market.liquidityUsd/prev.liquidityUsd-1)*100:null;
-  const buys=Number(market.buys5m)||0,sells=Number(market.sells5m)||0,buyRatio=buys+sells?buys/(buys+sells):0,pc=Number(market.priceChange5m)||0;
+  const buys=Number(market.buys5m),sells=Number(market.sells5m),hasFlow=Number.isFinite(buys)&&Number.isFinite(sells)&&buys+sells>0,buyRatio=hasFlow?buys/(buys+sells):0,pc=Number(market.priceChange5m);
   const signals={};
   if(model==='new_launch'){
-    signals.buyPressure=buyRatio>=.70?25:buyRatio>=.60?18:buyRatio>=.52?9:0;
+    signals.buyPressure=!hasFlow?0:buyRatio>=.70?25:buyRatio>=.60?18:buyRatio>=.52?9:0;
     signals.buyerAcceleration=ba===null?0:ba>=2?25:ba>=1.35?17:ba>=1.1?8:0;
     signals.volumeAcceleration=va===null?0:va>=2?15:va>=1.35?10:va>=1.1?5:0;
-    signals.priceAction=pc>=1&&pc<=10?10:pc>10&&pc<=18?5:pc>=0&&pc<1?4:0;
+    signals.priceAction=Number.isFinite(pc)?(pc>=1&&pc<=10?10:pc>10&&pc<=18?5:pc>=0&&pc<1?4:0):0;
     signals.liquidityStability=lc===null?5:lc>=-2?10:lc>=-7?4:0;
     signals.activity=market.volume5mUsd>=cfg.minVolume5mUsd*3?5:market.volume5mUsd>=cfg.minVolume5mUsd*1.5?4:2;
   } else {
     signals.volumeAcceleration=va===null?0:va>=2?25:va>=1.35?18:va>=1.1?8:0;
-    signals.buyPressure=buyRatio>=.70?15:buyRatio>=.60?11:buyRatio>=.52?5:0;
+    signals.buyPressure=!hasFlow?0:buyRatio>=.70?15:buyRatio>=.60?11:buyRatio>=.52?5:0;
     signals.buyerAcceleration=ba===null?0:ba>=2?15:ba>=1.35?10:ba>=1.1?5:0;
-    signals.priceAction=pc>=1&&pc<=8?20:pc>8&&pc<=15?12:pc>=0&&pc<1?5:0;
+    signals.priceAction=Number.isFinite(pc)?(pc>=1&&pc<=8?20:pc>8&&pc<=15?12:pc>=0&&pc<1?5:0):0;
     signals.liquidityStability=lc===null?5:lc>=-2?10:lc>=-7?4:0;
     signals.activity=market.volume5mUsd>=cfg.minVolume5mUsd*3?10:market.volume5mUsd>=cfg.minVolume5mUsd*1.5?7:4;
   }
-  signals.extensionPenalty=pc>30?-25:pc>20?-12:0;
+  signals.extensionPenalty=Number.isFinite(pc)?(pc>30?-25:pc>20?-12:0):0;
   const raw=Object.values(signals).reduce((s,n)=>s+n,0),score=Math.max(0,Math.min(100,raw));
   const safetyPassed=checks.price&&checks.liquidity&&checks.security&&checks.age,historyReady=history.length>=2;
   const passed=safetyPassed&&checks.minimumActivity&&historyReady&&score>=cfg.minEntryScore;
@@ -52,31 +52,28 @@ export function scoreCandidate(market, report, history = [], config = {}) {
 
 
 function includedTokenMap(a=[]){return new Map(a.filter(x=>x.type==='token').map(x=>[x.id,x.attributes||{}]));}
-const cache=new Map(),blocked=new Map();let jupNext=0,reddit={at:0,items:[]};
+const cache=new Map(),blocked=new Map();let jupNext=0;
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function provider(key,url,ttl=300000,headers={}){const now=Date.now(),c=cache.get(key),until=blocked.get(key)||0;if(c&&now-c.at<ttl)return{status:'cached',value:c.value,error:null};if(now<until)return{status:c?'stale-cache':'cooldown',value:c?.value||null,error:'cooldown'};try{const r=await fetch(url,{headers:{accept:'application/json','user-agent':'PumpWatch/3.3',...headers},signal:AbortSignal.timeout(12000)});if(!r.ok){if(r.status===429)blocked.set(key,now+Math.max(180000,Number(r.headers.get('retry-after'))*1000||0));throw Error('HTTP '+r.status);}const value=await r.json();cache.set(key,{at:now,value});blocked.delete(key);return{status:'live',value,error:null};}catch(e){return{status:c?'stale-cache':'rejected',value:c?.value||null,error:e.message};}}
 async function jupiterFeeds(){const out=[];for(const [n,u] of [['recent','https://api.jup.ag/tokens/v2/recent'],['trending','https://api.jup.ag/tokens/v2/toptrending/5m?limit=100'],['organic','https://api.jup.ag/tokens/v2/toporganicscore/5m?limit=100']]){await pause(Math.max(0,jupNext-Date.now()));jupNext=Date.now()+2200;out.push({name:n,...await provider('jup-'+n,u,300000,process.env.JUPITER_API_KEY?{'x-api-key':process.env.JUPITER_API_KEY}:{})});}return out;}
-function cleanXml(x=''){return String(x).replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g,'$1').replace(/<[^>]+>/g,' ').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/\s+/g,' ').trim();}
-async function redditFeed(){if(Date.now()-reddit.at<900000)return{status:'cached',items:reddit.items,checkedAt:new Date(reddit.at).toISOString()};try{const r=await fetch('https://www.reddit.com/search.rss?q=Solana%20memecoin&sort=new&t=day&limit=100',{headers:{accept:'application/rss+xml, application/xml','user-agent':'PumpWatch/1.0 research'},signal:AbortSignal.timeout(10000)});if(!r.ok)throw Error('Reddit RSS HTTP '+r.status);const xml=await r.text(),items=[...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].map(m=>{const b=m[1],g=k=>cleanXml((b.match(new RegExp('<'+k+'>([\\s\\S]*?)<\\/'+k+'>','i'))||[])[1]||'');return{title:g('title'),text:g('title')+' '+g('description'),author:g('author'),link:g('link')};}).filter(x=>x.title);reddit={at:Date.now(),items};return{status:'live',items,checkedAt:new Date().toISOString()};}catch(e){return{status:'unavailable',items:reddit.items,error:e.message,checkedAt:reddit.at?new Date(reddit.at).toISOString():null};}}
-function sentiment(t){t=t.toLowerCase();const p=['bullish','moon','pump','breakout','gem','strong','buy','surge','adoption','🚀','10x'].filter(w=>t.includes(w)).length,n=['scam','rug','dump','sell','bearish','dead','honeypot','fake','warning','avoid'].filter(w=>t.includes(w)).length;return{p,n,score:p+n?Math.round((p-n)/(p+n)*100):0};}
 async function discoverySources(){
  const [profiles,boosts,pools]=await Promise.all([provider('dex-profile',DEX+'/token-profiles/latest/v1'),provider('dex-boost',DEX+'/token-boosts/latest/v1'),provider('gecko',GT+'/networks/solana/new_pools?include=base_token,quote_token,dex&page=1')]);
- const [jup,red]=await Promise.all([jupiterFeeds(),redditFeed()]),rows=new Map();
+ const jup=await jupiterFeeds(),rows=new Map();
  const add=(id,m,src,created=null,pool=null)=>{if(!id)return;const x=rows.get(id)||{tokenAddress:id,sources:[],symbol:m?.symbol,name:m?.name,poolCreatedAt:created};if(!x.sources.includes(src))x.sources.push(src);x.symbol=x.symbol||m?.symbol;x.name=x.name||m?.name;x.poolCreatedAt=x.poolCreatedAt||created;if(pool&&!x.geckoPool)x.geckoPool=pool;if(m?.organicScore!==undefined)x.jupiterOrganicScore=Number(m.organicScore);if(m?.isVerified!==undefined)x.jupiterVerified=!!m.isVerified;if(m?.audit)x.jupiterAudit=m.audit;rows.set(id,x);};
  if(Array.isArray(profiles.value))for(const x of profiles.value)if(x.chainId==='solana')add(x.tokenAddress,x,'DexScreener profiles');
  if(Array.isArray(boosts.value))for(const x of boosts.value)if(x.chainId==='solana')add(x.tokenAddress,x,'DexScreener boosts');
  if(pools.value)for(const p of pools.value.data||[]){const rel=p.relationships?.base_token?.data,b=includedTokenMap(pools.value.included).get(rel?.id),id=b?.address||rel?.id?.replace(/^solana_/,'');if(id)add(id,b||{},'GeckoTerminal pools',p.attributes?.pool_created_at||null,p.attributes||null);}
  for(const f of jup)if(Array.isArray(f.value))for(const x of f.value)add(x.id,x,'Jupiter '+f.name);
  for(const x of rows.values()){const sym=String(x.symbol||'').trim().replace(/[^a-z0-9]/gi,''),name=String(x.name||'').trim();if(sym.length<3)continue;const hits=red.items.filter(y=>{const t=y.text;return new RegExp('(^|[^a-z0-9])'+sym+'([^a-z0-9]|$)','i').test(t)||(name.length>4&&t.toLowerCase().includes(name.toLowerCase()));}),ss=hits.map(y=>sentiment(y.text));x.socialSentiment={provider:'Reddit RSS',status:red.status,mentions:hits.length,uniqueAuthors:new Set(hits.map(y=>y.author).filter(Boolean)).size,score:ss.length?Math.round(ss.reduce((a,z)=>a+z.score,0)/ss.length):0,positive:ss.reduce((a,z)=>a+z.p,0),negative:ss.reduce((a,z)=>a+z.n,0),checkedAt:red.checkedAt};}
- return{rows:[...rows.values()],sourceStatus:{profiles:{status:profiles.status,count:profiles.value?.length||0,error:profiles.error},boosts:{status:boosts.status,count:boosts.value?.length||0,error:boosts.error},newPools:{status:pools.status,count:pools.value?.data?.length||0,error:pools.error},jupiter:Object.fromEntries(jup.map(x=>[x.name,{status:x.status,count:x.value?.length||0,error:x.error}])),reddit:{status:red.status,count:red.items?.length||0,error:red.error}}};
+ return{rows:[...rows.values()],sourceStatus:{profiles:{status:profiles.status,count:profiles.value?.length||0,error:profiles.error},boosts:{status:boosts.status,count:boosts.value?.length||0,error:boosts.error},newPools:{status:pools.status,count:pools.value?.data?.length||0,error:pools.error},jupiter:Object.fromEntries(jup.map(x=>[x.name,{status:x.status,count:x.value?.length||0,error:x.error}]))}};
 }
 function geckoMarketFallback(item){
  const p=item.geckoPool;if(!p)return null;
  const n=v=>{const x=Number(v);return Number.isFinite(x)?x:0;};
- const volume=p.volume_usd||{},change=p.price_change_percentage||{},tx=p.transactions||{},m5=tx.m5||{};
+ const volume=p.volume_usd||{};
  const price=n(p.base_token_price_usd),liquidity=n(p.reserve_in_usd);
  if(!(price>0))return null;
- return {address:item.tokenAddress,name:item.name||'Unknown token',symbol:item.symbol||'TOKEN',priceUsd:price,liquidityUsd:liquidity,volume24hUsd:n(volume.h24),marketCapUsd:0,pairAddress:p.address||null,dexId:p.dex_id||'GeckoTerminal',url:null,priceChange24h:n(change.h24),priceChange5m:n(change.m5),volume5mUsd:n(volume.m5),buys5m:n(m5.buys),sells5m:n(m5.sells),pairCreatedAt:p.pool_created_at?Date.parse(p.pool_created_at):null,marketDataSource:'GeckoTerminal fallback',fetchedAt:new Date().toISOString()};
+ return {address:item.tokenAddress,name:item.name||'Unknown token',symbol:item.symbol||'TOKEN',priceUsd:price,liquidityUsd:liquidity,volume24hUsd:n(volume.h24),marketCapUsd:0,pairAddress:p.address||null,dexId:p.dex_id||'GeckoTerminal',url:null,priceChange24h:n(change.h24),priceChange5m:null,volume5mUsd:null,buys5m:null,sells5m:null,pairCreatedAt:p.pool_created_at?Date.parse(p.pool_created_at):null,marketDataSource:'GeckoTerminal fallback (price/liquidity only; 5m metrics unavailable)',fetchedAt:new Date().toISOString()};
 }
 async function mapLimit(items,concurrency,fn){const out=new Array(items.length);let next=0;await Promise.all(Array.from({length:Math.min(concurrency,items.length)},async()=>{while(true){const i=next++;if(i>=items.length)return;try{out[i]=await fn(items[i])}catch(e){out[i]={address:items[i].tokenAddress,symbol:items[i].symbol||'UNKNOWN',name:items[i].name||'Unknown token',source:items[i].sources.join(' + '),error:e.message,passed:false,safetyPassed:false,score:0,checks:{price:false,liquidity:false,security:false,age:false,minimumActivity:false},rejectionReasons:['market_data']};}}}));return out;}
 
