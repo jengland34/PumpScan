@@ -6,7 +6,7 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { loadState, saveState } from './store.js';
 import { getTokenMarket } from './market.js';
 import { evaluatePosition } from './strategy.js';
-import { discoverCandidates, refreshCandidates } from './scanner.js';
+import { addPeerCorrelation, discoverCandidates, refreshCandidates } from './scanner.js';
 import { appendObservation, MAX_HISTORY_PER_TOKEN, MAX_TRACKED_TOKENS, TRACKED_REFRESH_PER_SCAN, telemetrySummary, trimTracking, updateTokenTracker } from './telemetry.js';
 const __dirname=path.dirname(fileURLToPath(import.meta.url));const PUBLIC_DIR=path.resolve(__dirname,'../public');const PORT=Number(process.env.PORT||3000);const GBP_USD=Number(process.env.GBP_USD||1.27);const POLL_MS=Math.max(10000,Number(process.env.POLL_INTERVAL_MS||15000));const APP_PASSWORD=process.env.APP_PASSWORD||'';
 let state=loadState();
@@ -44,7 +44,7 @@ async function discoveryScan(){if(discoveryBusy)return;discoveryBusy=true;try{
  const refreshed=await refreshCandidates(batch,cfg,state.marketHistory||{});for(const c of refreshed){if(!c.address)continue;state.candidatePool[c.address]=c;state.tokenUniverse[c.address]={...(state.tokenUniverse[c.address]||{}),address:c.address,symbol:c.symbol,name:c.name,lastEvaluatedAt:at};recordObservation(c,c,at);}
  // Maintain historical tracking separately from the live leaderboard.
  await refreshTrackedMarkets(new Set([...freshIds,...refreshed.map(c=>c.address)]));
- const all=Object.values(state.candidatePool);all.sort((a,b)=>Number(b.passed)-Number(a.passed)||Number(b.score||0)-Number(a.score||0)||(Number(b.volume5mUsd)||0)-(Number(a.volume5mUsd)||0));state.candidates=all.slice(0,50);
+ const all=Object.values(state.candidatePool);addPeerCorrelation(all,state.marketHistory||{});all.sort((a,b)=>Number(b.score||0)-Number(a.score||0)||(Number(b.volume5mUsd)||0)-(Number(a.volume5mUsd)||0));state.candidates=all.slice(0,50);
  const reasons={};for(const c of state.candidates)for(const x of c.rejectionReasons||[])reasons[x]=(reasons[x]||0)+1;
  state.discoveryDiagnostics={lastAttemptAt:at,lastSuccessAt:at,lastError:null,newDiscoveries:fresh.length,universeCount:Object.keys(state.tokenUniverse).length,evaluatedCount:fresh.length+refreshed.length,candidateCount:state.candidates.length,passedCount:state.candidates.filter(x=>x.passed).length,rejectionSummary:reasons,providers:fresh.sourceStatus||{}};
  lastDiscoveryAt=at;lastDiscoveryError=null;addEvent('Scanner completed: '+fresh.length+' new-feed candidates; '+refreshed.length+' existing tokens re-evaluated; universe '+Object.keys(state.tokenUniverse).length+'; top 50 updated.');
