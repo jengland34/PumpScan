@@ -44,7 +44,7 @@ export function createShrineStream({onTrade,onLaunch=()=>{},onStatus=()=>{},ioFa
   });
   socket.on('connect',()=>{
    reconnects++;connectedAt=new Date().toISOString();lastError=null;
-   subscribed.clear();launchFeedAck='pending';migrationFeedAck='pending';
+   subscribed.clear();launchFeedAck='pending';migrationFeedAck='pending';for(const mint of [...launchSeen].slice(-MAX_SUBS))subscribeToken(mint);
    socket.emit('subscribe_new_tokens',{protocols:PROTOCOLS},ack=>{
     if(ack?.error){launchFeedAck='rejected';lastError='Launch feed rejected: '+(ack.message||ack.error);status('degraded');}
     else{launchFeedAck='accepted';status('connected');}
