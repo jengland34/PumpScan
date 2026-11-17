@@ -52,13 +52,15 @@ export function scoreCandidate(market, report, history = [], config = {}) {
 
 function includedTokenMap(included=[]){return new Map(included.filter(x=>x.type==='token').map(x=>[x.id,x.attributes||{}]));}
 let discoveryCooldownUntil=0;
-async function discoverySources(){\n  if(Date.now()<discoveryCooldownUntil)throw new Error(`Discovery providers rate-limited; retry after ${Math.ceil((discoveryCooldownUntil-Date.now())/1000)} seconds.`);
+async function discoverySources(){
+  if(Date.now()<discoveryCooldownUntil)throw new Error(`Discovery providers rate-limited; retry after ${Math.ceil((discoveryCooldownUntil-Date.now())/1000)} seconds.`);
   const settled=await Promise.allSettled([
     json(`${DEX}/token-profiles/latest/v1`),
     json(`${DEX}/token-boosts/latest/v1`),
     json(`${GT}/networks/solana/new_pools?include=base_token,quote_token,dex&page=1`)
   ]);
-  const [profiles,boosts,pools]=settled;\n  if(settled.some(x=>x.status==='rejected'&&Number(x.reason?.message?.match(/\\b429\\b/)?.[0])===429)){discoveryCooldownUntil=Date.now()+180000;}
+  const [profiles,boosts,pools]=settled;
+  if(settled.some(x=>x.status==='rejected'&&Number(x.reason?.message?.match(/\b429\b/)?.[0])===429)){discoveryCooldownUntil=Date.now()+180000;}
   const rows=new Map();
   const add=(address,meta,source,poolCreatedAt=null)=>{
     if(!address)return;
@@ -92,11 +94,11 @@ async function discoverySources(){\n  if(Date.now()<discoveryCooldownUntil)throw
 }
 async function mapLimit(items,concurrency,fn){const out=new Array(items.length);let next=0;await Promise.all(Array.from({length:Math.min(concurrency,items.length)},async()=>{while(true){const i=next++;if(i>=items.length)return;try{out[i]=await fn(items[i])}catch(e){out[i]={address:items[i].tokenAddress,symbol:items[i].symbol||'UNKNOWN',name:items[i].name||'Unknown token',source:items[i].sources.join(' + '),error:e.message,passed:false,safetyPassed:false,score:0,checks:{price:false,liquidity:false,security:false,age:false,minimumActivity:false},rejectionReasons:['market_data']};}}}));return out;}
 
-export async function discoverCandidates(limit=15,config={},historyByAddress={}){
+export async function discoverCandidates(limit=60,config={},historyByAddress={}){
   const {rows,sourceStatus}=await discoverySources();
   if(!rows.length)throw new Error(`Discovery providers returned no Solana tokens. Dex profiles: ${sourceStatus.profiles} (${sourceStatus.profileCount}; ${sourceStatus.profilesError||'no error detail'}), boosts: ${sourceStatus.boosts} (${sourceStatus.boostCount}; ${sourceStatus.boostsError||'no error detail'}), Gecko pools: ${sourceStatus.newPools} (${sourceStatus.poolCount}; ${sourceStatus.newPoolsError||'no error detail'}).`);
   const selected=rows.slice(0,Math.max(limit,1));
-  const candidates=await mapLimit(selected,6,async item=>{
+  const candidates=await mapLimit(selected,3,async item=>{
     const [market,report]=await Promise.all([getTokenMarket(item.tokenAddress),rugcheck(item.tokenAddress)]);
     const pairCreatedAt=market.pairCreatedAt||(item.poolCreatedAt?Date.parse(item.poolCreatedAt):null);
     const pairAgeHours=pairCreatedAt?Math.max(0,(Date.now()-pairCreatedAt)/3600000):null;
