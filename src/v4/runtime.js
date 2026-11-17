@@ -2,7 +2,7 @@ import { createEventBuffer } from './events.js';
 import { calculateFeatures } from './features.js';
 import { detectIgnition, detectMomentum } from './detectors.js';
 import { createShrineStream } from './shrine.js';
-import { getTokenMarket } from '../market.js';
+import { getTokenMarket, getTokenMarkets } from '../market.js';
 
 const buffer=createEventBuffer(),latestFeatures=new Map(),launches=new Map(),signals=new Map(),riskCache=new Map(),evaluating=new Set();
 const status={provider:'shrine',state:'not_started',received:0,persisted:0,lastEventAt:null,lastError:null,launches:0,signals:0,riskChecks:0,riskPasses:0,riskFailures:0,liquidityPasses:0,liquidityFailures:0,marketFailures:0};
@@ -43,6 +43,28 @@ function publishSignal(result,risk,features,market){
  Promise.resolve(persistSignal(signal)).catch(error=>{status.lastError='Signal persistence: '+error.message;});
  if(signals.size>MAX_SIGNALS){const oldest=[...signals.entries()].sort((a,b)=>Date.parse(a[1].createdAt)-Date.parse(b[1].createdAt))[0];if(oldest)signals.delete(oldest[0]);}
 }
+function updateSignalOutcome(signal,market,now=Date.now()){
+ if(!market?.priceUsd||!signal?.entryPriceUsd)return;
+ const created=Date.parse(signal.createdAt),ageMs=now-created;if(!Number.isFinite(created)||ageMs<0||ageMs>24*60*60_000)return;
+ const move=(market.priceUsd/signal.entryPriceUsd-1)*100;
+ signal.lastPriceUsd=market.priceUsd;signal.peakPriceUsd=Math.max(signal.peakPriceUsd||0,market.priceUsd);
+ signal.troughPriceUsd=signal.troughPriceUsd?Math.min(signal.troughPriceUsd,market.priceUsd):market.priceUsd;
+ signal.lastSeenAt=new Date(now).toISOString();
+ signal.outcome={returnPct:move,ageMinutes:ageMs/60000,peakReturnPct:(signal.peakPriceUsd/signal.entryPriceUsd-1)*100,adverseReturnPct:(signal.troughPriceUsd/signal.entryPriceUsd-1)*100};
+ signal.forwardReturns||={};
+ for(const [key,minutes] of Object.entries({'1m':1,'5m':5,'15m':15,'30m':30,'60m':60,'4h':240,'24h':1440})){
+  if(ageMs>=minutes*60_000&&!signal.forwardReturns[key])signal.forwardReturns[key]={returnPct:move,observedAt:new Date(now).toISOString(),delayMinutes:ageMs/60000};
+ }
+ if(signal.status==='active'&&(move<=-20||(ageMs>60*60_000&&move<2)))signal.status='expired';
+ Promise.resolve(persistSignal(signal)).catch(()=>{});
+}
+export async function refreshV4SignalOutcomes(limit=60){
+ const now=Date.now(),rows=[...signals.values()].filter(s=>s?.entryPriceUsd&&now-Date.parse(s.createdAt||0)<=24*60*60_000).sort((a,b)=>Date.parse(a.createdAt)-Date.parse(b.createdAt)).slice(-Math.max(1,Math.min(100,limit)));
+ if(!rows.length)return 0;
+ const results=await getTokenMarkets([...new Set(rows.map(s=>s.mint))]);let updated=0;
+ for(const signal of rows){const market=results.get(signal.mint)?.value;if(!market?.priceUsd||['stale','partial'].includes(market.dataStatus))continue;updateSignalOutcome(signal,market,now);updated++;}
+ return updated;
+}
 async function evaluateMint(mint){
  if(evaluating.has(mint))return;evaluating.add(mint);
  try{
@@ -56,13 +78,7 @@ async function evaluateMint(mint){
   latestFeatures.set(mint,evaluated);
   if(ignition.eligible)publishSignal(ignition,risk,evaluated,market);
   if(momentum.eligible)publishSignal(momentum,risk,evaluated,market);
-  for(const signal of signals.values())if(signal.mint===mint&&signal.status==='active'){
-   signal.lastPriceUsd=market.priceUsd;signal.peakPriceUsd=Math.max(signal.peakPriceUsd||0,market.priceUsd);signal.lastSeenAt=new Date().toISOString();
-   const move=signal.entryPriceUsd>0?(market.priceUsd/signal.entryPriceUsd-1)*100:0;
-   signal.outcome={returnPct:move,ageMinutes:(Date.now()-Date.parse(signal.createdAt))/60000,peakReturnPct:signal.entryPriceUsd>0?(signal.peakPriceUsd/signal.entryPriceUsd-1)*100:0};
-   if(move<=-20||((Date.now()-Date.parse(signal.createdAt))>60*60_000&&move<2))signal.status='expired';
-   Promise.resolve(persistSignal(signal)).catch(()=>{});
-  }
+  for(const signal of signals.values())if(signal.mint===mint)updateSignalOutcome(signal,market,Date.now());
  }catch(error){status.lastError='Evaluation '+mint.slice(0,8)+': '+error.message;}
  finally{evaluating.delete(mint);}
 }
