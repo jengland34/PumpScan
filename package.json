@@ -1,8 +1,8 @@
 {
-  "name": "pumpwatch-solana",
-  "version": "0.1.0",
+  "name": "pumpwatch-intelligence",
+  "version": "0.4.0",
   "private": true,
-  "description": "Personal Solana token monitor and paper auto-trader",
+  "description": "Solana-first signal intelligence and paper evaluation",
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
@@ -10,7 +10,7 @@
     "test": "node --test"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "dependencies": {
     "pg": "^8.16.3"
