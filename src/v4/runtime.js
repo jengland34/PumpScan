@@ -64,7 +64,7 @@ export function startV4({apiKey=process.env.SHRINE_API_KEY,saveEvent=async()=>{}
  if(stream)return stream;persistEvent=saveEvent;persistSignal=saveSignal;
  stream=createShrineStream({apiKey,onLaunch:launch=>{launches.set(launch.mint,launch);status.launches=launches.size;},onTrade:event=>{
   if(!buffer.add(event))return;status.received++;status.lastEventAt=event.receivedAt;
-  latestFeatures.set(event.mint,calculateFeatures(buffer,event.mint));
+  latestFeatures.set(event.mint,{...calculateFeatures(buffer,event.mint),symbol:event.symbol||launches.get(event.mint)?.symbol||'UNKNOWN'});
   Promise.resolve(persistEvent(event)).then(ok=>{if(ok!==false)status.persisted++;}).catch(error=>{status.lastError=error.message;});
   evaluateMint(event.mint);
  },onStatus:next=>Object.assign(status,next)});return stream;
