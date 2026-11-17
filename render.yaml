@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: pumpwatch-private
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/health
+    envVars:
+      - key: APP_PASSWORD
+        generateValue: true
+      - key: POLL_INTERVAL_MS
+        value: "15000"
+      - key: GBP_USD
+        value: "1.27"
+    disk:
+      name: pumpwatch-state
+      mountPath: /app/data
+      sizeGB: 1
