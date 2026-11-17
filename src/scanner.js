@@ -55,7 +55,7 @@ export function scoreCandidate(market, report, history = [], config = {}) {
   const safetyPassed=checks.price&&checks.liquidity&&checks.security&&checks.age,historyReady=history.length>=2;
   const requiredScore=model==='new_launch'?cfg.minEntryScore:cfg.minEstablishedEntryScore;
   const passed=safetyPassed&&checks.minimumActivity&&historyReady&&score>=requiredScore;
-  return {model,modelLabel:model==='new_launch'?'New launch':'Established',score,marketSentimentScore,sentimentBasis,minEntryScore:requiredScore,checks,safetyPassed,historyReady,observations:history.length+1,passed,signals,metrics:{buyRatio,volumeAcceleration:va,buyerAcceleration:ba,liquidityChangePct:lc,volumeTrend,buyerTrend,ageLimitHours:ageLimit},rejectionReasons:Object.entries(checks).filter(([,v])=>!v).map(([k])=>k).concat(!historyReady?['history']:[],score<cfg.minEntryScore?['entry_score']:[])};
+  return {model,modelLabel:model==='new_launch'?'New launch':'Established',score,marketSentimentScore,sentimentBasis,minEntryScore:requiredScore,checks,safetyPassed,historyReady,observations:history.length+1,passed,signals,metrics:{buyRatio,volumeAcceleration:va,buyerAcceleration:ba,liquidityChangePct:lc,volumeTrend,buyerTrend,ageLimitHours:ageLimit},rejectionReasons:Object.entries(checks).filter(([,v])=>!v).map(([k])=>k).concat(!historyReady?['history']:[],score<requiredScore?['entry_score']:[])};
 }
 
 
@@ -147,7 +147,7 @@ export async function discoverCandidates(limit=60,config={},historyByAddress={},
   });
   for(const c of candidates){c.sourceStatus=sourceStatus;if(!c.rejectionReasons)c.rejectionReasons=['market_data'];}
   addPeerCorrelation(candidates,historyByAddress);
-  candidates.sort((a,b)=>Number(b.passed)-Number(a.passed)||((b.score+(b.localCorrelation?.rankBoost||0)+(b.socialSentiment?.mentions>=3&&b.socialSentiment?.uniqueAuthors>=2&&b.socialSentiment?.score>0?Math.min(4,b.socialSentiment.mentions):0)+(b.jupiterOrganicScore>=60?2:0))-(a.score+(a.localCorrelation?.rankBoost||0)+(a.socialSentiment?.mentions>=3&&a.socialSentiment?.uniqueAuthors>=2&&a.socialSentiment?.score>0?Math.min(4,a.socialSentiment.mentions):0)+(a.jupiterOrganicScore>=60?2:0)))||(Number(b.volume5mUsd)||0)-(Number(a.volume5mUsd)||0));
+  candidates.sort((a,b)=>(a.model==='new_launch'?0:1)-(b.model==='new_launch'?0:1)||Number(b.passed)-Number(a.passed)||((b.score+(b.localCorrelation?.rankBoost||0)+(b.socialSentiment?.mentions>=3&&b.socialSentiment?.uniqueAuthors>=2&&b.socialSentiment?.score>0?Math.min(4,b.socialSentiment.mentions):0)+(b.jupiterOrganicScore>=60?2:0))-(a.score+(a.localCorrelation?.rankBoost||0)+(a.socialSentiment?.mentions>=3&&a.socialSentiment?.uniqueAuthors>=2&&a.socialSentiment?.score>0?Math.min(4,a.socialSentiment.mentions):0)+(a.jupiterOrganicScore>=60?2:0)))||(Number(b.volume5mUsd)||0)-(Number(a.volume5mUsd)||0));
   candidates.sourceStatus=sourceStatus;
   return candidates;
 }
