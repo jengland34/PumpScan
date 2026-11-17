@@ -1,5 +1,5 @@
 import { dexPaprikaFetch } from './dexpaprika.js';
-const BASE = 'https://api.dexscreener.com/tokens/v1/solana/';
+const BASE = 'https://api.dexscreener.com/tokens/v1/solana/'; // secondary provider only
 const CACHE_TTL_MS = 45_000;
 const MIN_REQUEST_INTERVAL_MS = 300;
 const BASE_429_COOLDOWN_MS = 60_000;
@@ -102,7 +102,7 @@ async function fetchDexPaprika(address) {
     buys5m: five.buys == null ? null : Number(five.buys), sells5m: five.sells == null ? null : Number(five.sells),
     pairCreatedAt: null, fetchedAt: new Date().toISOString(),
     dataStatus: [five.last_price_usd_change,five.volume_usd??five.volume,five.buys,five.sells].every(v=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v))) ? 'live' : 'partial',
-    dataAgeMs: 0, marketDataSource: 'DexPaprika fallback'
+    dataAgeMs: 0, marketDataSource: 'DexPaprika'
   };
   cache.set(address, { at: Date.now(), value });
   return value;
@@ -143,49 +143,48 @@ export async function getTokenMarkets(addresses = []) {
       result.set(address, { value: { ...cached.value, dataStatus: cached.value.dataStatus === 'partial' ? 'partial' : 'cached', dataAgeMs: now - cached.at } });
     } else if (inFlight.has(address)) {
       result.set(address, { promise: inFlight.get(address) });
-    } else {
-      pending.push(address);
-    }
+    } else pending.push(address);
   }
 
-  for (let i = 0; i < pending.length; i += MAX_BATCH_SIZE) {
-    const batch = pending.slice(i, i + MAX_BATCH_SIZE);
-    const blockedUntil = Math.max(globalCooldownUntil, ...batch.map(a => cooldowns.get(a) || 0));
-    if (Date.now() < blockedUntil) {
-      const reason = 'DexScreener cooldown (' + Math.ceil((blockedUntil - Date.now()) / 1000) + 's remaining)';
-      for (const address of batch) {
-        const stale = staleSnapshot(address, cache.get(address), reason);
-        result.set(address, stale ? { value: stale } : { error: new Error(reason) });
+  // DexPaprika is the primary source. Its free keyed tier is 30 REST requests/minute;
+  // the shared limiter deliberately stays below that ceiling. DexScreener is only
+  // consulted when DexPaprika cannot return a usable token snapshot.
+  for (const address of pending) {
+    const task = (async () => {
+      try {
+        return await fetchDexPaprika(address);
+      } catch (paprikaError) {
+        try {
+          const blockedUntil = globalCooldownUntil;
+          if (Date.now() < blockedUntil) throw new Error('DexScreener cooldown (' + Math.ceil((blockedUntil-Date.now())/1000) + 's remaining)');
+          await fetchBatch([address]);
+          const entry = cache.get(address);
+          if (entry) return { ...entry.value, providerFallbackReason: paprikaError.message };
+          throw new Error('DexScreener returned no matching pair');
+        } catch (secondaryError) {
+          const stale = staleSnapshot(address, cache.get(address), 'DexPaprika: ' + paprikaError.message + '; DexScreener: ' + secondaryError.message);
+          if (stale) return stale;
+          throw new Error('DexPaprika primary failed: ' + paprikaError.message + '; DexScreener fallback failed: ' + secondaryError.message);
+        }
       }
-      continue;
-    }
-    const task = fetchBatch(batch);
-    for (const address of batch) inFlight.set(address, task);
+    })();
+    inFlight.set(address, task);
     try {
-      await task;
-      for (const address of batch) {
-        const entry = cache.get(address);
-        result.set(address, entry ? { value: { ...entry.value } } : { error: new Error('No fresh Solana trading pair found for this mint') });
-      }
+      const value = await task;
+      result.set(address, { value: { ...value } });
     } catch (error) {
-      // Do not fan one batch failure out into N fallback requests. That
-      // behaviour exhausts DexPaprika's shared-IP quota during provider outages.
-      for (const address of batch) {
-        const stale = staleSnapshot(address, cache.get(address), error.message);
-        result.set(address, stale ? { value: stale } : { error });
-      }
+      result.set(address, { error });
     } finally {
-      for (const address of batch) inFlight.delete(address);
+      inFlight.delete(address);
     }
   }
 
   for (const [address, entry] of result) {
     if (entry.promise) {
-      try { result.set(address, { value: await entry.promise.then(() => {
-        const cached = cache.get(address);
-        return cached ? { ...cached.value } : null;
-      }) }); }
-      catch (error) { result.set(address, { error }); }
+      try {
+        const value = await entry.promise;
+        result.set(address, value ? { value: { ...value } } : { error: new Error('Market data unavailable') });
+      } catch (error) { result.set(address, { error }); }
     }
   }
   return result;
