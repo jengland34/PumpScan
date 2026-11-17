@@ -7,7 +7,7 @@ export function normaliseShrineTrade(row, receivedAt = new Date().toISOString(),
   const quoteMint=row?.quoteMint||row?.quote_mint||row?.quote||null, rawPrice=Number(row?.price??0);
   const explicitUsd=Number(row?.usdValue??row?.amountUsd??row?.volumeUsd??0), feedPriceUsd=Number(row?.priceUSD??row?.priceUsd??0);
   const stable=['EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v','USD1'].includes(quoteMint);
-  const priceUsd=feedPriceUsd>0?feedPriceUsd:(rawPrice>0&&quoteMint?.startsWith('So111')&&solUsd>0?rawPrice*solUsd:null);
+  const priceUsd=feedPriceUsd>0?feedPriceUsd:(rawPrice>0&&stable?rawPrice:(rawPrice>0&&quoteMint?.startsWith('So111')&&solUsd>0?rawPrice*solUsd:null));
   const usd=explicitUsd>0?explicitUsd:(priceUsd>0&&tokenAmount>0?priceUsd*tokenAmount:(stable?quoteAmount:(quoteMint?.startsWith('So111')&&solUsd>0?quoteAmount*solUsd:0)));
   const timestamp=row?.timestamp??row?.time??receivedAt;
   const parsed=typeof timestamp==='number'?new Date(timestamp<1e10?timestamp*1000:timestamp):new Date(timestamp);
