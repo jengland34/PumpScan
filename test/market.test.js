@@ -4,7 +4,7 @@ import { getTokenMarkets } from '../src/market.js';
 
 test('market snapshots are fetched in batches of at most 30 mints', async () => {
   const originalFetch = globalThis.fetch;
-  const addresses = Array.from({ length: 31 }, (_, i) => 'Mint' + String(i).padStart(36, '1'));
+  const addresses = Array.from({ length: 31 }, (_, i) => 'Mint' + i.toString(36).padStart(36, '0'));
   const calls = [];
   globalThis.fetch = async url => {
     calls.push(String(url));
