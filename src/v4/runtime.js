@@ -80,4 +80,16 @@ export function v4Status(){return{...status,trackedTokens:buffer.tokens().length
 export function v4Features(mint){return latestFeatures.get(mint)||null;}
 export function v4TopActivity(limit=50){return[...latestFeatures.values()].sort((a,b)=>(b.netBuyUsd1m||0)-(a.netBuyUsd1m||0)).slice(0,limit);}
 export function v4RecentLaunches(limit=100){return[...launches.values()].slice(-limit).reverse();}
+export function restoreV4Signals(rows=[]){
+ signals.clear();
+ for(const signal of rows){
+  if(!signal?.mint||!signal?.model||!signal?.id)continue;
+  const key=signalKey(signal.mint,signal.model);
+  const current=signals.get(key);
+  if(!current||Date.parse(signal.createdAt||0)>Date.parse(current.createdAt||0))signals.set(key,signal);
+ }
+ while(signals.size>MAX_SIGNALS){const oldest=[...signals.entries()].sort((a,b)=>Date.parse(a[1].createdAt)-Date.parse(b[1].createdAt))[0];if(oldest)signals.delete(oldest[0]);}
+ status.signals=signals.size;
+ return signals.size;
+}
 export function v4Signals(limit=100){return[...signals.values()].sort((a,b)=>Date.parse(b.createdAt)-Date.parse(a.createdAt)).slice(0,limit);}
