@@ -5,7 +5,7 @@ import { createShrineStream } from './shrine.js';
 import { getTokenMarket, getTokenMarkets } from '../market.js';
 
 const buffer=createEventBuffer(),latestFeatures=new Map(),launches=new Map(),signals=new Map(),riskCache=new Map(),liquidityObservations=new Map(),evaluating=new Set();
-const status={provider:'shrine',state:'not_started',received:0,persisted:0,lastEventAt:null,lastError:null,launches:0,signals:0,riskChecks:0,riskPasses:0,riskFailures:0,liquidityPasses:0,liquidityFailures:0,marketFailures:0};
+const status={provider:'shrine',state:'not_started',received:0,persisted:0,lastEventAt:null,lastError:null,launches:0,signals:0,riskChecks:0,riskPasses:0,riskFailures:0,liquidityPasses:0,liquidityFailures:0,marketFailures:0,modelEvaluations:{ignition:0,momentum:0},modelEligible:{ignition:0,momentum:0},gateFailures:{ignition:{},momentum:{}},lastEvaluatedAt:null,lastEvaluatedMint:null,lastGateSnapshot:{ignition:null,momentum:null},lastSignalAt:null};
 let stream=null,persistEvent=async()=>{},persistSignal=async()=>{};
 const SIGNAL_COOLDOWN_MS=15*60_000,MAX_SIGNALS=2000,MIN_LIQUIDITY_USD=5000,MAX_NORMALISED_RISK=40;
 
@@ -39,7 +39,7 @@ function publishSignal(result,risk,features,market){
  const key=signalKey(features.mint,result.model),prior=signals.get(key),now=Date.now();
  if(prior&&prior.status==='active'&&now-Date.parse(prior.lastSeenAt)<SIGNAL_COOLDOWN_MS){prior.lastSeenAt=new Date(now).toISOString();prior.lastFeatures=features;prior.occurrences++;return;}
  const signal={id:key+':'+now,mint:features.mint,symbol:features.symbol||market?.symbol||'UNKNOWN',model:result.model,status:'active',score:result.score,reasons:result.reasons,gates:result.gates,risk,entryPriceUsd:market?.priceUsd||features.latestPriceUsd||null,peakPriceUsd:market?.priceUsd||features.latestPriceUsd||null,lastPriceUsd:market?.priceUsd||features.latestPriceUsd||null,createdAt:new Date(now).toISOString(),lastSeenAt:new Date(now).toISOString(),occurrences:1,version:result.version,outcome:null};
- signals.set(key,signal);status.signals=signals.size;
+ signals.set(key,signal);status.signals=signals.size;status.lastSignalAt=signal.createdAt;
  Promise.resolve(persistSignal(signal)).catch(error=>{status.lastError='Signal persistence: '+error.message;});
  if(signals.size>MAX_SIGNALS){const oldest=[...signals.entries()].sort((a,b)=>Date.parse(a[1].createdAt)-Date.parse(b[1].createdAt))[0];if(oldest)signals.delete(oldest[0]);}
 }
@@ -71,6 +71,15 @@ function assessLiquidityTrend(mint,market,risk){
  if(liquidity>0)liquidityObservations.set(mint,{liquidityUsd:liquidity,at:now,shockUntil:shock?(previous?.shockUntil>now?previous.shockUntil:now+5*60_000):0});
  return{...risk,liquidityChangePct:change,liquidityTrendSampleAgeMs:sampleAgeMs,liquidityShock:shock,liquidityPassed:risk.liquidityPassed&&!shock};
 }
+function recordModelEvaluation(result,features){
+ const model=result.model,now=new Date().toISOString(),gates=result.gates||{},failures=Object.entries(gates).filter(([,passed])=>!passed).map(([name])=>name);
+ status.modelEvaluations[model]=(status.modelEvaluations[model]||0)+1;
+ if(result.eligible)status.modelEligible[model]=(status.modelEligible[model]||0)+1;
+ const counts=status.gateFailures[model]||(status.gateFailures[model]={});
+ for(const name of failures)counts[name]=(counts[name]||0)+1;
+ status.lastEvaluatedAt=now;status.lastEvaluatedMint=features.mint;
+ status.lastGateSnapshot[model]={mint:features.mint,symbol:features.symbol||'UNKNOWN',at:now,eligible:!!result.eligible,score:result.score,gates:{...gates},rejectionReasons:failures};
+}
 async function evaluateMint(mint){
  if(evaluating.has(mint))return;evaluating.add(mint);
  try{
@@ -80,6 +89,7 @@ async function evaluateMint(mint){
   const risk=assessLiquidityTrend(mint,market,await assessRisk(mint,market));
   const evaluated={...features,latestPriceUsd:market.priceUsd,symbol:features.symbol||market.symbol||'UNKNOWN',market:{priceUsd:market.priceUsd,liquidityUsd:market.liquidityUsd,volume5mUsd:market.volume5mUsd,priceChange5m:market.priceChange5m,dataStatus:market.dataStatus,source:market.marketDataSource},risk};
   const ignition=detectIgnition(evaluated,risk),momentum=detectMomentum(evaluated,risk);
+  recordModelEvaluation(ignition,evaluated);recordModelEvaluation(momentum,evaluated);
   evaluated.ignition=ignition;evaluated.momentum=momentum;
   latestFeatures.set(mint,evaluated);
   if(ignition.eligible)publishSignal(ignition,risk,evaluated,market);
