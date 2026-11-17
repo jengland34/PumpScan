@@ -71,8 +71,9 @@ function normalizePair(address, p) {
     sells5m: Number(p.txns?.m5?.sells || 0),
     pairCreatedAt: p.pairCreatedAt || null,
     fetchedAt: new Date().toISOString(),
-    dataStatus: 'live',
-    dataAgeMs: 0
+    dataStatus: [p.volume?.m5,p.txns?.m5?.buys,p.txns?.m5?.sells,p.priceChange?.m5].every(v=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v))) ? 'live' : 'partial',
+    dataAgeMs: 0,
+    marketDataSource: 'DexScreener'
   };
 }
 
@@ -96,10 +97,11 @@ async function fetchDexPaprika(address) {
     volume24hUsd: Number(summary['24h']?.volume_usd || summary['24h']?.volume || 0),
     marketCapUsd: Number(summary.fdv || 0), pairAddress: null, dexId: 'DexPaprika', url: null,
     priceChange24h: Number(summary['24h']?.last_price_usd_change || 0),
-    priceChange5m: Number(five.last_price_usd_change || 0),
-    volume5mUsd: Number(five.volume_usd || five.volume || 0),
-    buys5m: Number(five.buys || 0), sells5m: Number(five.sells || 0),
-    pairCreatedAt: null, fetchedAt: new Date().toISOString(), dataStatus: 'live',
+    priceChange5m: five.last_price_usd_change == null ? null : Number(five.last_price_usd_change),
+    volume5mUsd: five.volume_usd == null && five.volume == null ? null : Number(five.volume_usd ?? five.volume),
+    buys5m: five.buys == null ? null : Number(five.buys), sells5m: five.sells == null ? null : Number(five.sells),
+    pairCreatedAt: null, fetchedAt: new Date().toISOString(),
+    dataStatus: [five.last_price_usd_change,five.volume_usd??five.volume,five.buys,five.sells].every(v=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v))) ? 'live' : 'partial',
     dataAgeMs: 0, marketDataSource: 'DexPaprika fallback'
   };
   cache.set(address, { at: Date.now(), value });
