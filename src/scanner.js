@@ -45,9 +45,11 @@ export function scoreCandidate(market, report, history = [], config = {}) {
   }
   signals.extensionPenalty=Number.isFinite(pc)?(pc>30?-25:pc>20?-12:0):0;
   const raw=Object.values(signals).reduce((s,n)=>s+n,0),score=Math.max(0,Math.min(100,raw));
+  const marketSentimentScore=Math.max(0,Math.min(100,Object.entries(signals).filter(([k])=>k!=='extensionPenalty').reduce((sum,[,v])=>sum+Math.max(0,v),0)));
+  const sentimentBasis=model==='new_launch'?'Buy pressure, buyer acceleration, volume acceleration, price action and liquidity stability':'Volume acceleration, buy pressure, buyer acceleration, price action and liquidity stability';
   const safetyPassed=checks.price&&checks.liquidity&&checks.security&&checks.age,historyReady=history.length>=2;
   const passed=safetyPassed&&checks.minimumActivity&&historyReady&&score>=cfg.minEntryScore;
-  return {model,modelLabel:model==='new_launch'?'New launch':'Established',score,minEntryScore:cfg.minEntryScore,checks,safetyPassed,historyReady,observations:history.length+1,passed,signals,metrics:{buyRatio,volumeAcceleration:va,buyerAcceleration:ba,liquidityChangePct:lc},rejectionReasons:Object.entries(checks).filter(([,v])=>!v).map(([k])=>k).concat(!historyReady?['history']:[],score<cfg.minEntryScore?['entry_score']:[])};
+  return {model,modelLabel:model==='new_launch'?'New launch':'Established',score,marketSentimentScore,sentimentBasis,minEntryScore:cfg.minEntryScore,checks,safetyPassed,historyReady,observations:history.length+1,passed,signals,metrics:{buyRatio,volumeAcceleration:va,buyerAcceleration:ba,liquidityChangePct:lc},rejectionReasons:Object.entries(checks).filter(([,v])=>!v).map(([k])=>k).concat(!historyReady?['history']:[],score<cfg.minEntryScore?['entry_score']:[])};
 }
 
 
