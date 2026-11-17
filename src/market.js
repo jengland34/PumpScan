@@ -154,13 +154,8 @@ export async function getTokenMarkets(addresses = []) {
     if (Date.now() < blockedUntil) {
       const reason = 'DexScreener cooldown (' + Math.ceil((blockedUntil - Date.now()) / 1000) + 's remaining)';
       for (const address of batch) {
-        try {
-          const value = await fetchDexPaprika(address);
-          result.set(address, { value });
-        } catch (fallbackError) {
-          const stale = staleSnapshot(address, cache.get(address), reason + '; ' + fallbackError.message);
-          result.set(address, stale ? { value: stale } : { error: new Error(reason + '; ' + fallbackError.message) });
-        }
+        const stale = staleSnapshot(address, cache.get(address), reason);
+        result.set(address, stale ? { value: stale } : { error: new Error(reason) });
       }
       continue;
     }
@@ -173,16 +168,11 @@ export async function getTokenMarkets(addresses = []) {
         result.set(address, entry ? { value: { ...entry.value } } : { error: new Error('No fresh Solana trading pair found for this mint') });
       }
     } catch (error) {
-      // Independent live fallback when DexScreener rate-limits the service.
+      // Do not fan one batch failure out into N fallback requests. That
+      // behaviour exhausts DexPaprika's shared-IP quota during provider outages.
       for (const address of batch) {
-        try {
-          const value = await fetchDexPaprika(address);
-          result.set(address, { value });
-        } catch (fallbackError) {
-          const reason = error.message + '; ' + fallbackError.message;
-          const stale = staleSnapshot(address, cache.get(address), reason);
-          result.set(address, stale ? { value: stale } : { error: new Error(reason) });
-        }
+        const stale = staleSnapshot(address, cache.get(address), error.message);
+        result.set(address, stale ? { value: stale } : { error });
       }
     } finally {
       for (const address of batch) inFlight.delete(address);
