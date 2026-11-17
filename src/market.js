@@ -210,3 +210,9 @@ export async function getTokenMarket(address) {
 
 export const MARKET_CACHE_TTL_MS = CACHE_TTL_MS;
 export const MARKET_FRESHNESS_LIMIT_MS = 90_000;
+
+// A partial snapshot can still contain a current token price; missing 5m
+// statistics should block model gates, not USD trade enrichment.
+export function hasFreshMarketPrice(market, now = Date.now()) {
+  return Number(market?.priceUsd) > 0 && market.dataStatus !== 'stale' && Number(market.dataAgeMs || 0) <= MARKET_FRESHNESS_LIMIT_MS;
+}
