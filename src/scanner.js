@@ -2,7 +2,7 @@ import { getTokenMarket } from './market.js';
 
 const DEX = 'https://api.dexscreener.com';
 const GT = 'https://api.geckoterminal.com/api/v2';
-const DEFAULT_SCAN_CONFIG = Object.freeze({ minLiquidityUsd: 10000, minVolume5mUsd: 1500, maxPairAgeHours: 72, maxRiskScore: 35, minEntryScore: 55, newLaunchMaxAgeHours: 24 });
+const DEFAULT_SCAN_CONFIG = Object.freeze({ minLiquidityUsd: 10000, minVolume5mUsd: 1500, maxPairAgeHours: 72, maxEstablishedAgeHours: 4320, maxRiskScore: 35, minEntryScore: 55, minEstablishedEntryScore: 60, newLaunchMaxAgeHours: 24 });
 
 async function json(url, timeout = 12000) {
   const response = await fetch(url, { headers: { accept: 'application/json', 'user-agent': 'PumpWatch/3.2' }, signal: AbortSignal.timeout(timeout) });
