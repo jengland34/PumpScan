@@ -12,7 +12,7 @@ test('normalises a Shrine trade with stablecoin quote into a canonical event',()
 test('normalises SOL-quoted trade using live SOL/USD and refuses unknown USD conversion',()=>{
  const sol={...base,quoteMint:'So11111111111111111111111111111111111111112',quoteAmount:2,price:0.01};
  assert.equal(normaliseShrineTrade(sol,'2026-11-17T12:00:01Z',150).usd,300);
- assert.equal(normaliseShrineTrade(sol,'2026-11-17T12:00:01Z').usd,undefined);
+ assert.equal(normaliseShrineTrade(sol,'2026-11-17T12:00:01Z'),null);
 });
 test('rejects unsupported or incomplete trades',()=>{
  assert.equal(normaliseShrineTrade({...base,action:'transfer'}),null);
