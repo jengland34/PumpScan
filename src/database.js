@@ -1,11 +1,14 @@
 import pg from 'pg';
 
 let pool=null,initialWrite=false;
+const MAX_BATCH=500;
 let status={configured:false,connected:false,lastWriteAt:null,lastError:null};
 export function databaseStatus(){return {...status};}
 export async function initialiseDatabase(){
   if(!process.env.DATABASE_URL){status={...status,configured:false,connected:false,lastError:'DATABASE_URL is not configured'};return null;}
-  pool=new pg.Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.PGSSLMODE==='disable'?false:{rejectUnauthorized:false},max:4,idleTimeoutMillis:30000,connectionTimeoutMillis:10000,application_name:'pumpwatch'});
+  if(pool)await pool.end().catch(()=>{});
+  pool=new pg.Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.PGSSLMODE==='disable'?false:{rejectUnauthorized:false},max:4,idleTimeoutMillis:30000,connectionTimeoutMillis:10000,statement_timeout:15000,application_name:'pumpwatch'});
+  pool.on('error',error=>{status={...status,connected:false,lastError:error.message};console.error('PostgreSQL pool error:',error.message)});
   await pool.query(`
     CREATE TABLE IF NOT EXISTS app_state(id SMALLINT PRIMARY KEY CHECK(id=1),payload JSONB NOT NULL,updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
     CREATE TABLE IF NOT EXISTS tokens(address TEXT PRIMARY KEY,symbol TEXT,name TEXT,first_discovered_at TIMESTAMPTZ,last_discovered_at TIMESTAMPTZ,last_evaluated_at TIMESTAMPTZ,source TEXT,payload JSONB NOT NULL DEFAULT '{}'::jsonb);
@@ -16,6 +19,11 @@ export async function initialiseDatabase(){
     CREATE TABLE IF NOT EXISTS leaderboard_history(captured_at TIMESTAMPTZ NOT NULL,rank INTEGER NOT NULL,address TEXT NOT NULL,score DOUBLE PRECISION,payload JSONB NOT NULL,PRIMARY KEY(captured_at,rank));
     CREATE INDEX IF NOT EXISTS leaderboard_address_idx ON leaderboard_history(address,captured_at DESC);
     CREATE TABLE IF NOT EXISTS scan_runs(id BIGSERIAL PRIMARY KEY,started_at TIMESTAMPTZ NOT NULL,finished_at TIMESTAMPTZ,status TEXT NOT NULL,diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb);
+    CREATE UNIQUE INDEX IF NOT EXISTS scan_runs_started_idx ON scan_runs(started_at);
+    CREATE TABLE IF NOT EXISTS paper_trades(id TEXT PRIMARY KEY,address TEXT,symbol TEXT,type TEXT NOT NULL,occurred_at TIMESTAMPTZ NOT NULL,realised_pnl_gbp DOUBLE PRECISION,payload JSONB NOT NULL);
+    CREATE INDEX IF NOT EXISTS paper_trades_occurred_idx ON paper_trades(occurred_at DESC);
+    CREATE TABLE IF NOT EXISTS risk_assessments(address TEXT NOT NULL,assessed_at TIMESTAMPTZ NOT NULL,score DOUBLE PRECISION,available BOOLEAN,payload JSONB NOT NULL,PRIMARY KEY(address,assessed_at));
+    CREATE INDEX IF NOT EXISTS risk_assessments_time_idx ON risk_assessments(assessed_at DESC);
   `);
   status={configured:true,connected:true,lastWriteAt:null,lastError:null};return pool;
 }
@@ -26,7 +34,7 @@ export async function saveDatabaseState(state){
   try{
     await client.query('BEGIN');
     await client.query(`INSERT INTO app_state(id,payload,updated_at) VALUES(1,$1::jsonb,now()) ON CONFLICT(id) DO UPDATE SET payload=EXCLUDED.payload,updated_at=now()`,[JSON.stringify(state)]);
-    const tokens=Object.values(state.tokenUniverse||{});
+    const tokens=Object.values(state.tokenUniverse||{}).filter(t=>t.address).slice(-MAX_BATCH);
     if(tokens.length)await client.query(`INSERT INTO tokens(address,symbol,name,first_discovered_at,last_discovered_at,last_evaluated_at,source,payload)
       SELECT address,symbol,name,first_discovered_at,last_discovered_at,last_evaluated_at,source,payload
       FROM jsonb_to_recordset($1::jsonb) AS x(address text,symbol text,name text,first_discovered_at timestamptz,last_discovered_at timestamptz,last_evaluated_at timestamptz,source text,payload jsonb)
