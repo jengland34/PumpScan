@@ -1,11 +1,11 @@
-const BASE = 'https://api.dexscreener.com/latest/dex/tokens/';
+const BASE = 'https://api.dexscreener.com/tokens/v1/solana/';
 const CACHE_TTL_MS = 45_000;
 const MIN_REQUEST_INTERVAL_MS = 300;
 const BASE_429_COOLDOWN_MS = 60_000;
 const MAX_429_COOLDOWN_MS = 15 * 60_000;
+const MAX_BATCH_SIZE = 30;
 const cache = new Map();
 const cooldowns = new Map();
-const failures = new Map();
 let requestQueue = Promise.resolve();
 let lastRequestAt = 0;
 let globalCooldownUntil = 0;
@@ -35,31 +35,23 @@ async function scheduledFetch(url) {
     lastRequestAt = Date.now();
     return fetch(url, {
       headers: { accept: 'application/json', 'user-agent': 'PumpWatch/4.0' },
-      signal: AbortSignal.timeout(10_000)
+      signal: AbortSignal.timeout(12_000)
     });
   });
   requestQueue = task.catch(() => {});
   return task;
 }
 
-async function fetchMarket(address) {
-  const response = await scheduledFetch(`${BASE}${encodeURIComponent(address)}`);
-  if (!response.ok) {
-    const status = response.status;
-    if (status === 429 || status === 403) {
-      global429Failures += 1;
-      const exponential = Math.min(MAX_429_COOLDOWN_MS, BASE_429_COOLDOWN_MS * (2 ** Math.min(global429Failures - 1, 4)));
-      globalCooldownUntil = Date.now() + Math.max(exponential, retryAfterMs(response));
-      cooldowns.set(address, globalCooldownUntil);
-    }
-    throw new Error(`Market data request failed (${status})`);
-  }
-  const body = await response.json();
-  const pairs = (body.pairs || []).filter(p => p.chainId === 'solana' && Number(p.priceUsd) > 0);
-  pairs.sort((a, b) => Number(b.liquidity?.usd || 0) - Number(a.liquidity?.usd || 0));
-  const p = pairs[0];
-  if (!p) throw new Error('No Solana trading pair found for this mint');
-  const value = {
+function choosePair(pairs, address) {
+  const matching = pairs.filter(p => p.chainId === 'solana' &&
+    String(p.baseToken?.address || '').toLowerCase() === address.toLowerCase() &&
+    Number(p.priceUsd) > 0);
+  matching.sort((a, b) => Number(b.liquidity?.usd || 0) - Number(a.liquidity?.usd || 0));
+  return matching[0] || null;
+}
+
+function normalizePair(address, p) {
+  return {
     address,
     name: p.baseToken?.name || 'Unknown token',
     symbol: p.baseToken?.symbol || 'TOKEN',
@@ -80,35 +72,95 @@ async function fetchMarket(address) {
     dataStatus: 'live',
     dataAgeMs: 0
   };
-  cache.set(address, { at: Date.now(), value });
-  cooldowns.delete(address);
-  failures.delete(address);
+}
+
+async function fetchBatch(addresses) {
+  const url = BASE + addresses.map(encodeURIComponent).join(',');
+  const response = await scheduledFetch(url);
+  if (!response.ok) {
+    if (response.status === 429 || response.status === 403) {
+      global429Failures += 1;
+      const exponential = Math.min(MAX_429_COOLDOWN_MS, BASE_429_COOLDOWN_MS * (2 ** Math.min(global429Failures - 1, 4)));
+      globalCooldownUntil = Date.now() + Math.max(exponential, retryAfterMs(response));
+    }
+    throw new Error(`Market data request failed (${response.status})`);
+  }
+  const body = await response.json();
+  const pairs = Array.isArray(body) ? body : Array.isArray(body.pairs) ? body.pairs : [];
+  const now = Date.now();
+  for (const address of addresses) {
+    const pair = choosePair(pairs, address);
+    if (!pair) continue;
+    const value = normalizePair(address, pair);
+    cache.set(address, { at: now, value });
+    cooldowns.delete(address);
+  }
   global429Failures = 0;
   globalCooldownUntil = 0;
-  return value;
+}
+
+export async function getTokenMarkets(addresses = []) {
+  const unique = [...new Set(addresses.filter(x => typeof x === 'string' && x.length > 0))];
+  const result = new Map();
+  const pending = [];
+  const now = Date.now();
+  for (const address of unique) {
+    const cached = cache.get(address);
+    if (cached && now - cached.at <= CACHE_TTL_MS) {
+      result.set(address, { value: { ...cached.value, dataStatus: 'cached', dataAgeMs: now - cached.at } });
+    } else if (inFlight.has(address)) {
+      result.set(address, { promise: inFlight.get(address) });
+    } else {
+      pending.push(address);
+    }
+  }
+
+  for (let i = 0; i < pending.length; i += MAX_BATCH_SIZE) {
+    const batch = pending.slice(i, i + MAX_BATCH_SIZE);
+    const blockedUntil = Math.max(globalCooldownUntil, ...batch.map(a => cooldowns.get(a) || 0));
+    if (Date.now() < blockedUntil) {
+      const reason = `DexScreener cooldown (${Math.ceil((blockedUntil - Date.now()) / 1000)}s remaining)`;
+      for (const address of batch) {
+        const stale = staleSnapshot(address, cache.get(address), reason);
+        result.set(address, stale ? { value: stale } : { error: new Error(reason) });
+      }
+      continue;
+    }
+    const task = fetchBatch(batch);
+    for (const address of batch) inFlight.set(address, task);
+    try {
+      await task;
+      for (const address of batch) {
+        const entry = cache.get(address);
+        result.set(address, entry ? { value: { ...entry.value } } : { error: new Error('No fresh Solana trading pair found for this mint') });
+      }
+    } catch (error) {
+      for (const address of batch) {
+        const stale = staleSnapshot(address, cache.get(address), error.message);
+        result.set(address, stale ? { value: stale } : { error });
+      }
+    } finally {
+      for (const address of batch) inFlight.delete(address);
+    }
+  }
+
+  for (const [address, entry] of result) {
+    if (entry.promise) {
+      try { result.set(address, { value: await entry.promise.then(() => {
+        const cached = cache.get(address);
+        return cached ? { ...cached.value } : null;
+      }) }); }
+      catch (error) { result.set(address, { error }); }
+    }
+  }
+  return result;
 }
 
 export async function getTokenMarket(address) {
-  const now = Date.now();
-  const cached = cache.get(address);
-  if (cached && now - cached.at <= CACHE_TTL_MS) {
-    return { ...cached.value, dataStatus: 'cached', dataAgeMs: now - cached.at };
-  }
-  const until = Math.max(cooldowns.get(address) || 0, globalCooldownUntil);
-  if (now < until) {
-    const reason = `DexScreener cooldown (${Math.ceil((until - now) / 1000)}s remaining)`;
-    const stale = staleSnapshot(address, cached, reason);
-    if (stale) return stale;
-    throw new Error(reason);
-  }
-  if (inFlight.has(address)) return inFlight.get(address);
-  const request = fetchMarket(address).catch(error => {
-    const stale = staleSnapshot(address, cached, error.message);
-    if (stale) return stale;
-    throw error;
-  }).finally(() => inFlight.delete(address));
-  inFlight.set(address, request);
-  return request;
+  const result = await getTokenMarkets([address]);
+  const entry = result.get(address);
+  if (entry?.value) return entry.value;
+  throw entry?.error || new Error('Market data unavailable');
 }
 
 export const MARKET_CACHE_TTL_MS = CACHE_TTL_MS;
