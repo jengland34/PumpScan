@@ -1,3 +1,4 @@
+import { dexPaprikaFetch } from './dexpaprika.js';
 import { getTokenMarkets } from './market.js';
 
 const DEX = 'https://api.dexscreener.com';
@@ -62,7 +63,7 @@ export function scoreCandidate(market, report, history = [], config = {}) {
 function includedTokenMap(a=[]){return new Map(a.filter(x=>x.type==='token').map(x=>[x.id,x.attributes||{}]));}
 const cache=new Map(),blocked=new Map();let jupNext=0;
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
-async function provider(key,url,ttl=300000,headers={}){const now=Date.now(),c=cache.get(key),until=blocked.get(key)||0;if(c&&now-c.at<ttl)return{status:'cached',value:c.value,error:null};if(now<until)return{status:c?'stale-cache':'cooldown',value:c?.value||null,error:'cooldown'};try{const r=await fetch(url,{headers:{accept:'application/json','user-agent':'PumpWatch/3.3',...headers},signal:AbortSignal.timeout(12000)});if(!r.ok){if(r.status===429||r.status===403){const retry=Number(r.headers.get('retry-after'))*1000||0;blocked.set(key,now+Math.max(r.status===429?900000:1800000,retry));}throw Error('HTTP '+r.status);}const value=await r.json();cache.set(key,{at:now,value});blocked.delete(key);return{status:'live',value,error:null};}catch(e){return{status:c?'stale-cache':'rejected',value:c?.value||null,error:e.message};}}
+async function provider(key,url,ttl=300000,headers={},fetcher=fetch){const now=Date.now(),c=cache.get(key),until=blocked.get(key)||0;if(c&&now-c.at<ttl)return{status:'cached',value:c.value,error:null};if(now<until)return{status:c?'stale-cache':'cooldown',value:c?.value||null,error:'cooldown'};try{const r=await fetcher(url,{headers:{accept:'application/json','user-agent':'PumpWatch/3.3',...headers},signal:AbortSignal.timeout(12000)});if(!r.ok){if(r.status===429||r.status===403){const retry=Number(r.headers.get('retry-after'))*1000||0;blocked.set(key,now+Math.max(r.status===429?900000:1800000,retry));}throw Error('HTTP '+r.status);}const value=await r.json();cache.set(key,{at:now,value});blocked.delete(key);return{status:'live',value,error:null};}catch(e){return{status:c?'stale-cache':'rejected',value:c?.value||null,error:e.message};}}
 async function jupiterFeeds(){const out=[];for(const [n,u] of [['recent','https://api.jup.ag/tokens/v2/recent'],['trending','https://api.jup.ag/tokens/v2/toptrending/5m?limit=100'],['organic','https://api.jup.ag/tokens/v2/toporganicscore/5m?limit=100']]){await pause(Math.max(0,jupNext-Date.now()));jupNext=Date.now()+2200;out.push({name:n,...await provider('jup-'+n,u,900000,process.env.JUPITER_API_KEY?{'x-api-key':process.env.JUPITER_API_KEY}:{})});}return out;}
 function dexPaprikaPools(value){
   if(Array.isArray(value))return value;
@@ -85,7 +86,7 @@ async function discoverySources(){
    provider('dex-boost',DEX+'/token-boosts/latest/v1',900000),
    provider('gecko-new',GT+'/networks/solana/new_pools?include=base_token,quote_token,dex&page=1',600000),
    provider('gecko-trending',GT+'/networks/solana/trending_pools?include=base_token,quote_token,dex&page=1',600000),
-   provider('dexpaprika-solana-new','https://api.dexpaprika.com/networks/solana/pools/search?order_by=created_at&sort=desc&limit=100&detailed=true',300000)
+   provider('dexpaprika-solana-new','https://api.dexpaprika.com/networks/solana/pools/search?order_by=created_at&sort=desc&limit=100&detailed=true',300000,{},dexPaprikaFetch)
  ]);
  const jup=process.env.JUPITER_API_KEY?await jupiterFeeds():[];
  const rows=new Map();
