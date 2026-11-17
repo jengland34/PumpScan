@@ -1,29 +1,31 @@
-# PumpWatch Intelligence V4 — Sprint 1
+# PumpWatch Intelligence V4 — Shrine free-feed proof of concept
 
-V4 replaces the V3 snapshot-driven discovery loop with a Solana event-ingestion foundation. The existing mobile PWA and paper-position management remain in place during the engine replacement.
+## Provider and free-tier constraints
+
+V4 Sprint 1A uses Shrine Trade's keyless Solana Data API. No API key, account or token renewal is required for launch, migration and per-token trade feeds.
+
+Documented free limits: 2 open sockets per stream type; up to 50 concurrent subscriptions per Socket.IO connection; free new-token and per-token trade streams. Live OHLCV requires a free key and is not used. The whole-market Advanced Data Stream and 24-hour replay are paid features and are not used.
 
 ## Data flow
 
-Bitquery GraphQL subscription → canonical trade event → in-memory rolling event buffer → rolling feature snapshots → PostgreSQL raw event archive.
+Shrine Socket.IO launch/migration feeds → bounded mint subscriptions → per-token trade events → canonical event → rolling buffer → features → PostgreSQL raw-event archive.
 
-The Bitquery Trading.Trades stream is filtered to Solana. It provides decoded trade-side, trader, transaction, token/pair and USD amount fields. The implementation uses the GraphQL WebSocket endpoint and requires a server-side `BITQUERY_ACCESS_TOKEN`.
+The free plan does not provide the whole-market Advanced Data Stream. This implementation discovers new tokens and subscribes to their individual trade streams, up to 50 active mints per connection. The cap is exposed in /api/v4/status.
+
+## Environment
+
+Optional: SHRINE_API_KEY. Leave unset for keyless free feeds. Do not configure an invalid key.
 
 ## Endpoints
 
-- `GET /api/v4/status`: provider state, counts, persistence status and paper-only safety flags.
-- `GET /api/v4/activity`: current top-activity feature snapshots.
-- `GET /api/v4/features?mint=<token-mint>`: latest rolling features for a token.
+- GET /api/v4/status: provider, connection, subscription count, event count and paper-only flags.
+- GET /api/v4/activity: rolling feature snapshots.
+- GET /api/v4/features?mint=<token-mint>: latest features.
+
+## Reliability and data quality
+
+Socket.IO reconnects automatically. Active subscriptions are recreated as new launch events arrive; existing active mints are not yet replayed from persistent storage after process restart. The normaliser refuses trades without mint, signature, side and defensible USD value. SOL quote conversion uses the live SOL/USD feed. Shrine emits events before final confirmation and notes rare dropped-block duplicates; final-chain reconciliation is not yet implemented.
 
 ## Safety
 
-- No wallet connection, private-key storage, transaction signing or live execution.
-- V4 signal publication is deliberately disabled in Sprint 1.
-- Missing Bitquery credentials leave the stream disabled; no synthetic market data is generated.
-- Events are deduplicated by transaction signature and index.
-- Raw events are persisted only when PostgreSQL is configured. The runtime reports the in-memory/persistence distinction.
-
-## Runtime
-
-Node.js 22+ is required for the built-in WebSocket client. Configure `BITQUERY_ACCESS_TOKEN` as a private environment variable. Do not commit the token to Git.
-
-Sprint 1 is an ingestion and feature foundation, not a validated trading strategy. The ignition and momentum detector modules are provisional scaffolding and are not yet connected to published signals.
+Paper evaluation only. No wallet connection, private-key storage, signing, live execution or signal publication. Security/liquidity gates and detector wiring remain Sprint 2 work.
