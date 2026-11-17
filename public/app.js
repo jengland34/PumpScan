@@ -52,7 +52,7 @@ function renderV4(){
 async function refresh(){
  const results=await Promise.allSettled([api('/api/state'),api('/api/v4/status'),api('/api/v4/activity'),api('/api/v4/launches'),api('/api/v4/signals')]);
  const failures=[];
- if(results[0].status==='fulfilled'){state=results[0].value;usingCachedDashboard=false;}else failures.push('Dashboard: '+results[0].reason.message);
+ if(results[0].status==='fulfilled'){const incoming=results[0].value;const previous=state;state=incoming;if(!(incoming.candidates||[]).length&&(previous.candidates||[]).length){state={...incoming,candidates:previous.candidates,universe:incoming.universe?.total?incoming.universe:previous.universe,discoveryDiagnostics:incoming.discoveryDiagnostics||previous.discoveryDiagnostics};usingCachedDashboard=true;}else usingCachedDashboard=false;}else failures.push('Dashboard: '+results[0].reason.message);
  if(results[1].status==='fulfilled')v4=results[1].value;else failures.push('Feed status: '+results[1].reason.message);
  if(results[2].status==='fulfilled')activity=results[2].value.items||[];else failures.push('Activity: '+results[2].reason.message);
  if(results[3].status==='fulfilled')launches=results[3].value.items||[];else failures.push('Launches: '+results[3].reason.message);
