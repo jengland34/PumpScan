@@ -22,17 +22,20 @@ export const SOLANA_TRADES_SUBSCRIPTION = `subscription PumpWatchSolanaTrades {
 }`;
 
 export function createBitqueryStream({ token, onTrade, onStatus = () => {}, WebSocketImpl = globalThis.WebSocket, endpoint = ENDPOINT } = {}) {
-  let socket=null, stopped=false, reconnectTimer=null, reconnectMs=1000, connectedAt=null, lastEventAt=null, received=0, error=null;
+  let socket=null, stopped=false, reconnectTimer=null, watchdog=null, reconnectMs=1000, connectedAt=null, lastEventAt=null, lastMessageAt=null, received=0, error=null;
   function status(state, extra={}) { onStatus({provider:'bitquery',state,connectedAt,lastEventAt,received,error,...extra}); }
   function connect() {
     if(stopped)return;
     if(!token){error='BITQUERY_ACCESS_TOKEN is not configured';status('disabled');return;}
     if(typeof WebSocketImpl!=='function'){error='Node.js WebSocket support is unavailable; run on Node.js 22+';status('error');return;}
     status('connecting');
+    clearInterval(watchdog);
+    watchdog=setInterval(()=>{if(socket?.readyState===1&&lastMessageAt&&Date.now()-lastMessageAt>90_000){error='Bitquery stream silent for over 90 seconds';status('reconnecting');try{socket.close(4000,'stream watchdog');}catch{}}},15_000);
     const url=new URL(endpoint);url.searchParams.set('token',token);
     socket=new WebSocketImpl(url.toString(),['graphql-transport-ws']);
     socket.addEventListener('open',()=>{reconnectMs=1000;socket.send(JSON.stringify({type:'connection_init'}));});
     socket.addEventListener('message',event=>{
+      lastMessageAt=Date.now();
       let msg;try{msg=JSON.parse(typeof event.data==='string'?event.data:String(event.data));}catch{return;}
       if(msg.type==='connection_ack'){
         connectedAt=new Date().toISOString();status('connected');
@@ -45,8 +48,8 @@ export function createBitqueryStream({ token, onTrade, onStatus = () => {}, WebS
       else if(msg.type==='ping')socket.send(JSON.stringify({type:'pong'}));
     });
     socket.addEventListener('error',()=>{error='Bitquery WebSocket transport error';status('error');});
-    socket.addEventListener('close',()=>{status('disconnected');if(!stopped){reconnectTimer=setTimeout(connect,reconnectMs);reconnectMs=Math.min(30000,reconnectMs*2);}});
+    socket.addEventListener('close',()=>{clearInterval(watchdog);status('disconnected');if(!stopped){reconnectTimer=setTimeout(connect,reconnectMs);reconnectMs=Math.min(30000,reconnectMs*2);}});
   }
   connect();
-  return { stop(){stopped=true;clearTimeout(reconnectTimer);try{socket?.close(1000,'PumpWatch shutdown');}catch{}status('stopped');}, getStatus(){return {provider:'bitquery',state:stopped?'stopped':socket?.readyState===1?'connected':'connecting',connectedAt,lastEventAt,received,error};} };
+  return { stop(){stopped=true;clearTimeout(reconnectTimer);clearInterval(watchdog);try{socket?.close(1000,'PumpWatch shutdown');}catch{}status('stopped');}, getStatus(){return {provider:'bitquery',state:stopped?'stopped':socket?.readyState===1?'connected':'connecting',connectedAt,lastEventAt,received,error};} };
 }
