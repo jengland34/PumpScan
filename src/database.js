@@ -82,7 +82,11 @@ export async function persistV4Event(event) {
 }
 export async function v4EventStats() {
   if (!pool) return {configured:false,count:0};
-  const {rows}=await pool.query('SELECT count(*)::bigint AS count,max(received_at) AS last_event_at FROM raw_events');
+  // Avoid a full-table COUNT(*) on the hot ingestion table on every dashboard poll.
+  // reltuples is PostgreSQL's planner-maintained row estimate; latest event uses the received_at index.
+  const {rows}=await pool.query(`SELECT GREATEST(c.reltuples,0)::bigint AS count,
+    (SELECT received_at FROM raw_events ORDER BY received_at DESC LIMIT 1) AS last_event_at
+    FROM pg_class c WHERE c.oid='raw_events'::regclass`);
   return {configured:true,count:Number(rows[0]?.count||0),lastEventAt:rows[0]?.last_event_at||null};
 }
 
