@@ -56,38 +56,49 @@ export function scoreCandidate(market, report, history = [], config = {}) {
 function includedTokenMap(a=[]){return new Map(a.filter(x=>x.type==='token').map(x=>[x.id,x.attributes||{}]));}
 const cache=new Map(),blocked=new Map();let jupNext=0;
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
-async function provider(key,url,ttl=300000,headers={}){const now=Date.now(),c=cache.get(key),until=blocked.get(key)||0;if(c&&now-c.at<ttl)return{status:'cached',value:c.value,error:null};if(now<until)return{status:c?'stale-cache':'cooldown',value:c?.value||null,error:'cooldown'};try{const r=await fetch(url,{headers:{accept:'application/json','user-agent':'PumpWatch/3.3',...headers},signal:AbortSignal.timeout(12000)});if(!r.ok){if(r.status===429)blocked.set(key,now+Math.max(180000,Number(r.headers.get('retry-after'))*1000||0));throw Error('HTTP '+r.status);}const value=await r.json();cache.set(key,{at:now,value});blocked.delete(key);return{status:'live',value,error:null};}catch(e){return{status:c?'stale-cache':'rejected',value:c?.value||null,error:e.message};}}
-async function jupiterFeeds(){const out=[];for(const [n,u] of [['recent','https://api.jup.ag/tokens/v2/recent'],['trending','https://api.jup.ag/tokens/v2/toptrending/5m?limit=100'],['organic','https://api.jup.ag/tokens/v2/toporganicscore/5m?limit=100']]){await pause(Math.max(0,jupNext-Date.now()));jupNext=Date.now()+2200;out.push({name:n,...await provider('jup-'+n,u,300000,process.env.JUPITER_API_KEY?{'x-api-key':process.env.JUPITER_API_KEY}:{})});}return out;}
+async function provider(key,url,ttl=300000,headers={}){const now=Date.now(),c=cache.get(key),until=blocked.get(key)||0;if(c&&now-c.at<ttl)return{status:'cached',value:c.value,error:null};if(now<until)return{status:c?'stale-cache':'cooldown',value:c?.value||null,error:'cooldown'};try{const r=await fetch(url,{headers:{accept:'application/json','user-agent':'PumpWatch/3.3',...headers},signal:AbortSignal.timeout(12000)});if(!r.ok){if(r.status===429||r.status===403){const retry=Number(r.headers.get('retry-after'))*1000||0;blocked.set(key,now+Math.max(r.status===429?900000:1800000,retry));}throw Error('HTTP '+r.status);}const value=await r.json();cache.set(key,{at:now,value});blocked.delete(key);return{status:'live',value,error:null};}catch(e){return{status:c?'stale-cache':'rejected',value:c?.value||null,error:e.message};}}
+async function jupiterFeeds(){const out=[];for(const [n,u] of [['recent','https://api.jup.ag/tokens/v2/recent'],['trending','https://api.jup.ag/tokens/v2/toptrending/5m?limit=100'],['organic','https://api.jup.ag/tokens/v2/toporganicscore/5m?limit=100']]){await pause(Math.max(0,jupNext-Date.now()));jupNext=Date.now()+2200;out.push({name:n,...await provider('jup-'+n,u,900000,process.env.JUPITER_API_KEY?{'x-api-key':process.env.JUPITER_API_KEY}:{})});}return out;}
+function dexPaprikaPools(value){
+  if(Array.isArray(value))return value;
+  for(const key of ['results','data','pools','items'])if(Array.isArray(value?.[key]))return value[key];
+  return [];
+}
+function tokenFromPool(pool){
+  const tokens=Array.isArray(pool?.tokens)?pool.tokens:[pool?.base_token,pool?.token0,pool?.token].filter(Boolean);
+  // Pool search results are ordered base/quote in most responses. Prefer the
+  // explicit base token; never add both sides (which would flood the queue
+  // with SOL/USDC/USDT quote assets).
+  const t=pool?.base_token||tokens[0]||null;
+  if(!t)return null;
+  const id=t.address||t.token_address||t.mint||(typeof t.id==='string'&&!t.id.includes('_')?t.id:null);
+  return id?{id,meta:t}:null;
+}
 async function discoverySources(){
- const [profiles,boosts,pools,trendingPools]=await Promise.all([provider('dex-profile',DEX+'/token-profiles/latest/v1'),provider('dex-boost',DEX+'/token-boosts/latest/v1'),provider('gecko-new',GT+'/networks/solana/new_pools?include=base_token,quote_token,dex&page=1'),provider('gecko-trending',GT+'/networks/solana/trending_pools?include=base_token,quote_token,dex&page=1')]);
- const jup=await jupiterFeeds(),rows=new Map();
- const add=(id,m,src,created=null,pool=null)=>{if(!id)return;const x=rows.get(id)||{tokenAddress:id,sources:[],symbol:m?.symbol,name:m?.name,poolCreatedAt:created};if(!x.sources.includes(src))x.sources.push(src);x.symbol=x.symbol||m?.symbol;x.name=x.name||m?.name;x.poolCreatedAt=x.poolCreatedAt||created;if(pool&&!x.geckoPool)x.geckoPool=pool;if(m?.organicScore!==undefined)x.jupiterOrganicScore=Number(m.organicScore);if(m?.isVerified!==undefined)x.jupiterVerified=!!m.isVerified;if(m?.audit)x.jupiterAudit=m.audit;rows.set(id,x);};
+ const [profiles,boosts,pools,trendingPools,dexpaprika]=await Promise.all([
+   provider('dex-profile',DEX+'/token-profiles/latest/v1',900000),
+   provider('dex-boost',DEX+'/token-boosts/latest/v1',900000),
+   provider('gecko-new',GT+'/networks/solana/new_pools?include=base_token,quote_token,dex&page=1',600000),
+   provider('gecko-trending',GT+'/networks/solana/trending_pools?include=base_token,quote_token,dex&page=1',600000),
+   provider('dexpaprika-solana-new','https://api.dexpaprika.com/networks/solana/pools/search?order_by=created_at&sort=desc&limit=100&detailed=true',300000)
+ ]);
+ const jup=process.env.JUPITER_API_KEY?await jupiterFeeds():[];
+ const rows=new Map();
+ const add=(id,m,src,created=null,pool=null)=>{if(!id||typeof id!=='string')return;const x=rows.get(id)||{tokenAddress:id,sources:[],symbol:m?.symbol,name:m?.name,poolCreatedAt:created};if(!x.sources.includes(src))x.sources.push(src);x.symbol=x.symbol||m?.symbol;x.name=x.name||m?.name;x.poolCreatedAt=x.poolCreatedAt||created;if(pool&&!x.geckoPool)x.geckoPool=pool;if(m?.organicScore!==undefined)x.jupiterOrganicScore=Number(m.organicScore);if(m?.isVerified!==undefined)x.jupiterVerified=!!m.isVerified;if(m?.audit)x.jupiterAudit=m.audit;rows.set(id,x);};
  if(Array.isArray(profiles.value))for(const x of profiles.value)if(x.chainId==='solana')add(x.tokenAddress,x,'DexScreener profiles');
  if(Array.isArray(boosts.value))for(const x of boosts.value)if(x.chainId==='solana')add(x.tokenAddress,x,'DexScreener boosts');
  for(const [feed,label] of [[pools,'GeckoTerminal new pools'],[trendingPools,'GeckoTerminal trending pools']])if(feed.value)for(const p of feed.value.data||[]){const rel=p.relationships?.base_token?.data,b=includedTokenMap(feed.value.included).get(rel?.id),id=b?.address||rel?.id?.replace(/^solana_/,'');if(id)add(id,b||{},label,p.attributes?.pool_created_at||null,p.attributes||null);}
+ for(const p of dexPaprikaPools(dexpaprika.value)){const t=tokenFromPool(p);if(t)add(t.id,t.meta,'DexPaprika new pools',p.created_at||p.createdAt||p.created_at_utc||null);}
  for(const f of jup)if(Array.isArray(f.value))for(const x of f.value)add(x.id,x,'Jupiter '+f.name);
- // Independent discovery fallbacks. These feeds are only used when the
- // primary DexScreener/GeckoTerminal/Jupiter sources return no candidates.
- let pumpfun=null,dexpaprika=null;
+ // Pump.fun is a last-resort launch feed. Respect its provider cooldown and
+ // only call it when the other discovery feeds yielded no token addresses.
+ let pumpfun=null;
  if(rows.size===0){
-   pumpfun=await provider('pumpfun-new','https://frontend-api-v3.pump.fun/coins?offset=0&limit=50&sort=created_timestamp&order=DESC&includeNsfw=false',300000);
+   pumpfun=await provider('pumpfun-new','https://frontend-api-v3.pump.fun/coins?offset=0&limit=50&sort=created_timestamp&order=DESC&includeNsfw=false',900000);
    const coins=Array.isArray(pumpfun.value)?pumpfun.value:(pumpfun.value?.coins||pumpfun.value?.data||[]);
    for(const x of coins)if(x?.mint)add(x.mint,x,'Pump.fun new launches',x.created_timestamp?(Number(x.created_timestamp)<1e12?new Date(Number(x.created_timestamp)*1000).toISOString():new Date(Number(x.created_timestamp)).toISOString()):null);
  }
- if(rows.size===0){
-   dexpaprika=await provider('dexpaprika-solana-new','https://api.dexpaprika.com/networks/solana/pools/search?order_by=created_at&sort=desc&limit=50&detailed=true',300000);
-   const pools=dexpaprika.value?.results||dexpaprika.value?.data||[];
-   for(const p of pools){
-     const tokens=Array.isArray(p.tokens)?p.tokens:[p.base_token,p.token0,p.token].filter(Boolean);
-     for(const t of tokens){
-       const id=t?.address||t?.token_address||t?.id||t?.mint;
-       if(id)add(id,{symbol:t.symbol,name:t.name},'DexPaprika new pools',p.created_at||p.createdAt||null);
-     }
-   }
- }
- const red={items:[],status:'disabled',checkedAt:new Date().toISOString()};
- for(const x of rows.values()){const sym=String(x.symbol||'').trim().replace(/[^a-z0-9]/gi,''),name=String(x.name||'').trim();if(sym.length<3)continue;const hits=red.items.filter(y=>{const t=y.text;return new RegExp('(^|[^a-z0-9])'+sym+'([^a-z0-9]|$)','i').test(t)||(name.length>4&&t.toLowerCase().includes(name.toLowerCase()));}),ss=hits.map(y=>sentiment(y.text));x.socialSentiment={provider:'Reddit RSS',status:red.status,mentions:hits.length,uniqueAuthors:new Set(hits.map(y=>y.author).filter(Boolean)).size,score:ss.length?Math.round(ss.reduce((a,z)=>a+z.score,0)/ss.length):0,positive:ss.reduce((a,z)=>a+z.p,0),negative:ss.reduce((a,z)=>a+z.n,0),checkedAt:red.checkedAt};}
- return{rows:[...rows.values()],sourceStatus:{profiles:{status:profiles.status,count:profiles.value?.length||0,error:profiles.error},boosts:{status:boosts.status,count:boosts.value?.length||0,error:boosts.error},newPools:{status:pools.status,count:pools.value?.data?.length||0,error:pools.error},trendingPools:{status:trendingPools.status,count:trendingPools.value?.data?.length||0,error:trendingPools.error},jupiter:Object.fromEntries(jup.map(x=>[x.name,{status:x.status,count:x.value?.length||0,error:x.error}])),pumpfun:pumpfun?{status:pumpfun.status,count:(Array.isArray(pumpfun.value)?pumpfun.value.length:(pumpfun.value?.coins||pumpfun.value?.data||[]).length),error:pumpfun.error}:{status:'not-needed',count:0,error:null},dexpaprika:dexpaprika?{status:dexpaprika.status,count:(dexpaprika.value?.results||dexpaprika.value?.data||[]).length,error:dexpaprika.error}:{status:'not-needed',count:0,error:null}}};
+ const sourceStatus={profiles:{status:profiles.status,count:profiles.value?.length||0,error:profiles.error},boosts:{status:boosts.status,count:boosts.value?.length||0,error:boosts.error},newPools:{status:pools.status,count:pools.value?.data?.length||0,error:pools.error},trendingPools:{status:trendingPools.status,count:trendingPools.value?.data?.length||0,error:trendingPools.error},dexpaprika:{status:dexpaprika.status,count:dexPaprikaPools(dexpaprika.value).length,error:dexpaprika.error},jupiter:Object.fromEntries(jup.map(x=>[x.name,{status:x.status,count:x.value?.length||0,error:x.error}])),pumpfun:pumpfun?{status:pumpfun.status,count:(Array.isArray(pumpfun.value)?pumpfun.value.length:(pumpfun.value?.coins||pumpfun.value?.data||[]).length),error:pumpfun.error}:{status:'not-needed',count:0,error:null}};
+ return{rows:[...rows.values()],sourceStatus};
 }
 function geckoMarketFallback(item){
  const p=item.geckoPool;if(!p)return null;
