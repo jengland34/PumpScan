@@ -1,3 +1,4 @@
+import { subscribeDexPaprikaPrices } from './dexpaprika-stream.js';
 import { dexPaprikaFetch } from './dexpaprika.js';
 const BASE = 'https://api.dexscreener.com/tokens/v1/solana/'; // secondary provider only
 const CACHE_TTL_MS = 45_000;
@@ -195,6 +196,26 @@ export async function getTokenMarket(address) {
   const entry = result.get(address);
   if (entry?.value) return entry.value;
   throw entry?.error || new Error('Market data unavailable');
+}
+
+let priceStream = null;
+export function startDexPaprikaPriceStream(addresses = [], onPrice = () => {}, onStatus = () => {}) {
+  if (!priceStream) {
+    priceStream = subscribeDexPaprikaPrices(addresses, update => {
+      const prior = cache.get(update.address);
+      const base = prior?.value || { address: update.address, name: 'Unknown token', symbol: 'TOKEN',
+        liquidityUsd: 0, volume24hUsd: 0, marketCapUsd: 0, priceChange24h: null,
+        priceChange5m: null, volume5mUsd: null, buys5m: null, sells5m: null };
+      const value = { ...base, priceUsd: update.priceUsd, fetchedAt: new Date(update.receivedAt).toISOString(),
+        dataStatus: 'partial', dataAgeMs: 0, marketDataSource: 'DexPaprika stream',
+        priceTimestamp: update.timestamp };
+      cache.set(update.address, { at: update.receivedAt, value });
+      try { onPrice(update.address, value); } catch {}
+    }, onStatus);
+  } else {
+    for (const address of addresses) priceStream.add(address);
+  }
+  return priceStream;
 }
 
 export const MARKET_CACHE_TTL_MS = CACHE_TTL_MS;
