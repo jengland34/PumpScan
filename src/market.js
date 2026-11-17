@@ -140,7 +140,7 @@ export async function getTokenMarkets(addresses = []) {
   for (const address of unique) {
     const cached = cache.get(address);
     if (cached && now - cached.at <= CACHE_TTL_MS) {
-      result.set(address, { value: { ...cached.value, dataStatus: 'cached', dataAgeMs: now - cached.at } });
+      result.set(address, { value: { ...cached.value, dataStatus: cached.value.dataStatus === 'partial' ? 'partial' : 'cached', dataAgeMs: now - cached.at } });
     } else if (inFlight.has(address)) {
       result.set(address, { promise: inFlight.get(address) });
     } else {
