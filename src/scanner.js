@@ -26,7 +26,7 @@ export function scoreCandidate(market, report, history = [], config = {}) {
   const prev=history.length?history[history.length-1]:null;
   const va=prev&&Number.isFinite(Number(market.volume5mUsd))?ratio(Number(market.volume5mUsd),Number(prev.volume5mUsd)):null, ba=prev&&Number.isFinite(Number(market.buys5m))?ratio(Number(market.buys5m),Number(prev.buys5m)):null;
   const lc=prev&&prev.liquidityUsd>0?(market.liquidityUsd/prev.liquidityUsd-1)*100:null;
-  const buys=Number(market.buys5m),sells=Number(market.sells5m),hasFlow=Number.isFinite(buys)&&Number.isFinite(sells)&&buys+sells>0,buyRatio=hasFlow?buys/(buys+sells):0,pc=Number(market.priceChange5m);
+  const buys=Number(market.buys5m),sells=Number(market.sells5m),hasFlow=Number.isFinite(buys)&&Number.isFinite(sells)&&buys+sells>0,buyRatio=hasFlow?buys/(buys+sells):0,pc=market.priceChange5m===null||market.priceChange5m===undefined||market.priceChange5m===''?NaN:Number(market.priceChange5m);
   const signals={};
   if(model==='new_launch'){
     signals.buyPressure=!hasFlow?0:buyRatio>=.70?25:buyRatio>=.60?18:buyRatio>=.52?9:0;
