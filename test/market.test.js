@@ -55,3 +55,22 @@ test('429 responses activate provider-wide cooldown without retry storms', async
     globalThis.fetch = originalFetch;
   }
 });
+
+
+test('fresh partial market snapshots remain usable for price enrichment', async () => {
+  const originalFetch = globalThis.fetch;
+  const { hasFreshMarketPrice } = await import('../src/market.js');
+  const address = 'PartialMint111111111111111111111111111111';
+  globalThis.fetch = async () => new Response(JSON.stringify([{
+    chainId: 'solana', baseToken: { address, name: 'Partial', symbol: 'PART' },
+    priceUsd: '0.002', liquidity: { usd: 12000 }, volume: { h24: 5000 },
+    txns: { h24: { buys: 20, sells: 10 } }, priceChange: { h24: 2 }, pairAddress: 'PartialPair'
+  }]), { status: 200, headers: { 'content-type': 'application/json' } });
+  try {
+    const result = await getTokenMarkets([address]);
+    const market = result.get(address).value;
+    assert.equal(market.dataStatus, 'partial');
+    assert.equal(hasFreshMarketPrice(market), true);
+    assert.equal(hasFreshMarketPrice({ ...market, dataStatus: 'stale' }), false);
+  } finally { globalThis.fetch = originalFetch; }
+});
