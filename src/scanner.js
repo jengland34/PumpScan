@@ -1,4 +1,4 @@
-import { getTokenMarket } from './market.js';
+import { getTokenMarkets } from './market.js';
 
 const DEX = 'https://api.dexscreener.com';
 const GT = 'https://api.geckoterminal.com/api/v2';
@@ -118,8 +118,9 @@ async function mapLimit(items,concurrency,fn){const out=new Array(items.length);
 
 export async function refreshCandidates(items=[],config={},historyByAddress={}){
  const selected=items.filter(x=>x?.tokenAddress||x?.address).map(x=>({tokenAddress:x.tokenAddress||x.address,symbol:x.symbol,name:x.name,sources:Array.isArray(x.sources)?x.sources:[x.source||'Previously discovered'],poolCreatedAt:x.poolCreatedAt||x.pairCreatedAt||null}));
+ const marketResults=await getTokenMarkets(selected.map(item=>item.tokenAddress));
  const candidates=await mapLimit(selected,3,async item=>{
-  const [marketResult,report]=await Promise.all([getTokenMarket(item.tokenAddress).then(value=>({value})).catch(error=>({error})),rugcheck(item.tokenAddress)]);
+  const [marketResult,report]=await Promise.all([Promise.resolve(marketResults.get(item.tokenAddress)||{error:new Error('Market data result missing')}),rugcheck(item.tokenAddress)]);
   const market=marketResult.value;
   if(!market||market.dataStatus==='stale')throw new Error('Market data unavailable or stale: '+(market?.dataError||marketResult.error?.message||'no fresh market snapshot'));
   const feedCreatedAt=item.poolCreatedAt?Date.parse(item.poolCreatedAt):null;
@@ -136,8 +137,9 @@ export async function discoverCandidates(limit=60,config={},historyByAddress={},
   const {rows,sourceStatus}=await discoverySources();
   // Empty discovery is not a failed scan: the persistent universe must still be re-evaluated.
   const selected=rows.filter(item=>!knownAddresses.has(item.tokenAddress)).slice(0,Math.max(limit,1));
+  const marketResults=await getTokenMarkets(selected.map(item=>item.tokenAddress));
   const candidates=await mapLimit(selected,3,async item=>{
-    const [marketResult,report]=await Promise.all([getTokenMarket(item.tokenAddress).then(value=>({value})).catch(error=>({error})),rugcheck(item.tokenAddress)]);
+    const [marketResult,report]=await Promise.all([Promise.resolve(marketResults.get(item.tokenAddress)||{error:new Error('Market data result missing')}),rugcheck(item.tokenAddress)]);
     const market=marketResult.value||geckoMarketFallback(item);
     if(!market||market.dataStatus==='stale')throw new Error('Market data unavailable or stale: '+(market?.dataError||marketResult.error?.message||'no fresh usable market snapshot'));
     const feedCreatedAt=item.poolCreatedAt?Date.parse(item.poolCreatedAt):null;
