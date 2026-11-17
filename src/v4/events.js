@@ -11,7 +11,9 @@ export function normaliseBitqueryTrade(row, receivedAt = new Date().toISOString(
   const priceUsd = Number(row?.Price ?? row?.PriceInUsd ?? 0);
   const timestamp = row?.Block?.Timestamp || row?.Block?.Time || receivedAt;
   if (!mint || !signature || !['buy','sell'].includes(side) || !(usd > 0)) return null;
-  const occurredAt = new Date(timestamp).toISOString();
+  const parsedTime = typeof timestamp === 'number' ? new Date(timestamp < 10_000_000_000 ? timestamp * 1000 : timestamp) : new Date(timestamp);
+  if (!Number.isFinite(parsedTime.getTime())) return null;
+  const occurredAt = parsedTime.toISOString();
   return {
     id: `${signature}:${index}`, chain: 'solana', provider: 'bitquery',
     mint, symbol: token.Symbol || pair.Currency?.Symbol || 'UNKNOWN',
