@@ -90,10 +90,11 @@ async function fetchDexPaprika(address) {
   const summary = body.summary || body.data?.summary || {};
   const five = summary['5m'] || {};
   const price = Number(summary.price_usd);
-  if (!(price > 0)) throw new Error('DexPaprika returned no current USD price');
+  const existing = cache.get(address)?.value;
+  const usablePrice = price > 0 ? price : Number(existing?.priceUsd) > 0 ? Number(existing.priceUsd) : null;
   const value = {
-    address, name: body.name || body.data?.name || 'Unknown token',
-    symbol: body.symbol || body.data?.symbol || 'TOKEN', priceUsd: price,
+    address, name: body.name || body.data?.name || existing?.name || 'Unknown token',
+    symbol: body.symbol || body.data?.symbol || existing?.symbol || 'TOKEN', priceUsd: usablePrice,
     liquidityUsd: Number(summary.liquidity_usd || 0),
     volume24hUsd: Number(summary['24h']?.volume_usd || summary['24h']?.volume || 0),
     marketCapUsd: Number(summary.fdv || 0), pairAddress: null, dexId: 'DexPaprika', url: null,
@@ -102,7 +103,7 @@ async function fetchDexPaprika(address) {
     volume5mUsd: five.volume_usd == null && five.volume == null ? null : Number(five.volume_usd ?? five.volume),
     buys5m: five.buys == null ? null : Number(five.buys), sells5m: five.sells == null ? null : Number(five.sells),
     pairCreatedAt: null, fetchedAt: new Date().toISOString(),
-    dataStatus: [five.last_price_usd_change,five.volume_usd??five.volume,five.buys,five.sells].every(v=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v))) ? 'live' : 'partial',
+    dataStatus: usablePrice && [five.last_price_usd_change,five.volume_usd??five.volume,five.buys,five.sells].every(v=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v))) ? 'live' : 'partial',
     dataAgeMs: 0, marketDataSource: 'DexPaprika'
   };
   cache.set(address, { at: Date.now(), value });
