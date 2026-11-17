@@ -39,12 +39,14 @@ async function discoveryScan(){if(discoveryBusy)return;discoveryBusy=true;try{
  // the current leaders, then the stalest entries. New discoveries are excluded.
  const pool=Object.values(state.candidatePool),ranked=pool.sort((a,b)=>(Number(b.score)||0)-(Number(a.score)||0));
  const leaders=ranked.slice(0,50).filter(c=>!freshIds.has(c.address));
+ const cursor=Number(state.refreshCursor||0),rotated=leaders.length?[...leaders.slice(cursor%leaders.length),...leaders.slice(0,cursor%leaders.length)]:[];
  const stale=Object.values(state.tokenUniverse).filter(t=>!freshIds.has(t.address)&&state.candidatePool[t.address]).sort((a,b)=>Date.parse(a.lastEvaluatedAt||a.lastDiscoveredAt||0)-Date.parse(b.lastEvaluatedAt||b.lastDiscoveredAt||0));
- const batch=[],used=new Set();for(const c of [...leaders,...stale]){if(batch.length>=20)break;if(!used.has(c.address)){batch.push(c);used.add(c.address);}}
+ const batch=[],used=new Set();for(const c of [...rotated,...stale]){if(batch.length>=20)break;if(!used.has(c.address)){batch.push(c);used.add(c.address);}}
+ if(leaders.length)state.refreshCursor=(cursor+Math.min(20,leaders.length))%leaders.length;
  const refreshed=await refreshCandidates(batch,cfg,state.marketHistory||{});for(const c of refreshed){if(!c.address)continue;state.candidatePool[c.address]=c;state.tokenUniverse[c.address]={...(state.tokenUniverse[c.address]||{}),address:c.address,symbol:c.symbol,name:c.name,lastEvaluatedAt:at};recordObservation(c,c,at);}
  // Maintain historical tracking separately from the live leaderboard.
  await refreshTrackedMarkets(new Set([...freshIds,...refreshed.map(c=>c.address)]));
- const all=Object.values(state.candidatePool);addPeerCorrelation(all,state.marketHistory||{});all.sort((a,b)=>Number(b.score||0)-Number(a.score||0)||(Number(b.volume5mUsd)||0)-(Number(a.volume5mUsd)||0));state.candidates=all.slice(0,50);
+ const all=Object.values(state.candidatePool);all.sort((a,b)=>Number(b.score||0)-Number(a.score||0)||(Number(b.volume5mUsd)||0)-(Number(a.volume5mUsd)||0));state.candidates=all.slice(0,50);addPeerCorrelation(state.candidates,state.marketHistory||{});
  const reasons={};for(const c of state.candidates)for(const x of c.rejectionReasons||[])reasons[x]=(reasons[x]||0)+1;
  state.discoveryDiagnostics={lastAttemptAt:at,lastSuccessAt:at,lastError:null,newDiscoveries:fresh.length,universeCount:Object.keys(state.tokenUniverse).length,evaluatedCount:fresh.length+refreshed.length,candidateCount:state.candidates.length,passedCount:state.candidates.filter(x=>x.passed).length,rejectionSummary:reasons,providers:fresh.sourceStatus||{}};
  lastDiscoveryAt=at;lastDiscoveryError=null;addEvent('Scanner completed: '+fresh.length+' new-feed candidates; '+refreshed.length+' existing tokens re-evaluated; universe '+Object.keys(state.tokenUniverse).length+'; top 50 updated.');
