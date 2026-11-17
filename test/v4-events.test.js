@@ -36,3 +36,15 @@ test('detectors remain independent and fail closed when safety data is missing',
  const risk={available:true,passed:true,liquidityPassed:true};
  assert.equal(detectIgnition(features,risk).eligible,true);assert.equal(detectMomentum(features,risk).eligible,true);
 });
+
+test('wallet-flow quality metrics describe observed buyer concentration',()=>{
+ const buffer=createEventBuffer(),at='2026-11-17T12:00:00.000Z';
+ const trade=(id,trader,usd)=>({id,mint:'mint-wallets',side:'buy',trader,usd,priceUsd:.01,receivedAt:at});
+ buffer.add(trade('a1','wallet-a',100));buffer.add(trade('a2','wallet-a',50));
+ buffer.add(trade('b1','wallet-b',50));buffer.add(trade('c1','wallet-c',50));
+ const f=calculateFeatures(buffer,'mint-wallets',Date.parse(at));
+ assert.equal(f.topBuyerShare5m,.4);
+ assert.equal(f.top3BuyerShare5m,1);
+ assert.equal(f.repeatBuyerShare5m,.5);
+ assert.equal(f.buyerBreadth5m,.75);
+});
