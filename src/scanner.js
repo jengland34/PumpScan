@@ -89,14 +89,13 @@ async function discoverySources(){
 }
 async function mapLimit(items,concurrency,fn){const out=new Array(items.length);let next=0;await Promise.all(Array.from({length:Math.min(concurrency,items.length)},async()=>{while(true){const i=next++;if(i>=items.length)return;try{out[i]=await fn(items[i])}catch(e){out[i]={address:items[i].tokenAddress,symbol:items[i].symbol||'UNKNOWN',name:items[i].name||'Unknown token',source:items[i].sources.join(' + '),error:e.message,passed:false,safetyPassed:false,score:0,checks:{price:false,liquidity:false,security:false,age:false,minimumActivity:false},rejectionReasons:['market_data']};}}}));return out;}
 
-export async function discoverCandidates(limit=60,config={},historyByAddress={}){
+export async function discoverCandidates(limit=15,config={},historyByAddress={}){
   const {rows,sourceStatus}=await discoverySources();
   const selected=rows.slice(0,Math.max(limit,1));
-  const candidates=await mapLimit(selected,4,async item=>{
-    const market=await getTokenMarket(item.tokenAddress);
+  const candidates=await mapLimit(selected,6,async item=>{
+    const [market,report]=await Promise.all([getTokenMarket(item.tokenAddress),rugcheck(item.tokenAddress)]);
     const pairCreatedAt=market.pairCreatedAt||(item.poolCreatedAt?Date.parse(item.poolCreatedAt):null);
     const pairAgeHours=pairCreatedAt?Math.max(0,(Date.now()-pairCreatedAt)/3600000):null;
-    const report=await rugcheck(item.tokenAddress);
     const candidate={...market,address:item.tokenAddress,symbol:market.symbol||item.symbol||'UNKNOWN',name:market.name||item.name||'Unknown token',pairAgeHours,pairCreatedAt,rugcheck:report,source:item.sources.join(' + '),scannedAt:new Date().toISOString()};
     const scored=scoreCandidate(candidate,report,historyByAddress[item.tokenAddress]||[],config);
     return {...candidate,...scored};
