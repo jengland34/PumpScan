@@ -2,7 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomUUID, timingSafeEqual, createDecipheriv } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { loadState, saveState } from './store.js';
 import { getTokenMarket } from './market.js';
 import { evaluatePosition } from './strategy.js';
@@ -10,31 +10,6 @@ import { discoverCandidates } from './scanner.js';
 import { appendObservation, MAX_HISTORY_PER_TOKEN, MAX_TRACKED_TOKENS, TRACKED_REFRESH_PER_SCAN, telemetrySummary, trimTracking, updateTokenTracker } from './telemetry.js';
 const __dirname=path.dirname(fileURLToPath(import.meta.url));const PUBLIC_DIR=path.resolve(__dirname,'../public');const PORT=Number(process.env.PORT||3000);const GBP_USD=Number(process.env.GBP_USD||1.27);const POLL_MS=Math.max(10000,Number(process.env.POLL_INTERVAL_MS||15000));const APP_PASSWORD=process.env.APP_PASSWORD||'';
 let state=loadState();
-function restoreRecoverySeed(){
- const keyHex=process.env.PUMPWATCH_RECOVERY_KEY;
- const seedPath=path.resolve('data/recovery.enc');
- if(!keyHex||!fs.existsSync(seedPath)||state.recoveryImportedAt)return false;
- try{
-  const packed=Buffer.from(fs.readFileSync(seedPath,'utf8').trim(),'base64');
-  const nonce=packed.subarray(0,12),tag=packed.subarray(packed.length-16),ciphertext=packed.subarray(12,packed.length-16);
-  const decipher=createDecipheriv('aes-256-gcm',Buffer.from(keyHex,'hex'),nonce);decipher.setAuthTag(tag);
-  const seed=JSON.parse(Buffer.concat([decipher.update(ciphertext),decipher.final()]).toString('utf8'));
-  if(!Array.isArray(seed.candidates)||!seed.tokenTracking||typeof seed.tokenTracking!=='object')throw new Error('Recovery seed shape invalid');
-  if(!(state.candidates||[]).length)state.candidates=seed.candidates;
-  if(!(state.tokenTracking&&Object.keys(state.tokenTracking).length))state.tokenTracking=seed.tokenTracking;
-  if(!(state.positions||[]).length)state.positions=seed.positions||[];
-  if(!(state.trades||[]).length)state.trades=seed.trades||[];
-  if(!(state.events||[]).length)state.events=seed.events||[];
-  if(!Object.keys(state.marketHistory||{}).length)state.marketHistory={};
-  if(!Object.keys(marketCache||{}).length)marketCache=seed.market||{};
-  state.scanner={...state.scanner,...(seed.scanner||{})};state.rules={...state.rules,...(seed.rules||{})};
-  state.discoveryDiagnostics=seed.discoveryDiagnostics||state.discoveryDiagnostics;
-  state.recoveryImportedAt=new Date().toISOString();
-  state.recoverySourceCreatedAt=seed.createdAt;
-  persist();console.log('Recovery restored: '+state.candidates.length+' candidates; '+Object.keys(state.tokenTracking).length+' token trackers.');
-  return true;
- }catch(error){console.error('Recovery import failed:',error.message);return false;}
-}
 let marketCache={},lastScanAt=null,scanBusy=false,lastDiscoveryAt=null,lastDiscoveryError=null,discoveryBusy=false;
 const mime={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.json':'application/json; charset=utf-8','.webmanifest':'application/manifest+json','.svg':'image/svg+xml'};const mintPattern=/^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 function addEvent(message,type='info'){state.events.unshift({id:randomUUID(),message,type,at:new Date().toISOString()});state.events=state.events.slice(0,120)}function persist(){saveState(state)}
@@ -58,5 +33,5 @@ function recordObservation(market,scored=null,at=new Date().toISOString()){if(!m
 async function refreshTrackedMarkets(excluded=new Set()){const due=Object.values(state.tokenTracking||{}).filter(t=>t.address&&!excluded.has(t.address)).sort((a,b)=>Date.parse(a.lastAttemptAt||a.lastSeenAt||0)-Date.parse(b.lastAttemptAt||b.lastSeenAt||0)).slice(0,TRACKED_REFRESH_PER_SCAN);for(const tracker of due){tracker.lastAttemptAt=new Date().toISOString();try{const market=await getTokenMarket(tracker.address);marketCache[tracker.address]=market;recordObservation(market,null)}catch(error){tracker.lastMarketError=error.message}}}
 async function discoveryScan(){if(discoveryBusy)return;discoveryBusy=true;try{const cfg=state.scanner,found=await discoverCandidates(60,cfg,state.marketHistory||{});state.candidates=found;const at=new Date().toISOString(),seen=new Set();for(const c of found){if(c.address){seen.add(c.address);recordObservation(c,c,at)}}await refreshTrackedMarkets(seen);const reasons={};for(const c of found)for(const x of c.rejectionReasons||[])reasons[x]=(reasons[x]||0)+1;state.discoveryDiagnostics={lastAttemptAt:at,lastSuccessAt:at,lastError:null,candidateCount:found.length,passedCount:found.filter(x=>x.passed).length,rejectionSummary:reasons,providers:found[0]?.sourceStatus||{}};lastDiscoveryAt=at;lastDiscoveryError=null;addEvent('Scanner completed: '+found.length+' candidates; '+found.filter(x=>x.passed).length+' passed; rejection breakdown '+Object.entries(reasons).sort((a,b)=>b[1]-a[1]).map(([k,n])=>k+' '+n).join(', ')+'.');if(cfg.enabled&&cfg.autoPaper){for(const c of found.filter(x=>x.passed&&x.historyReady&&x.safetyPassed).slice(0,3)){if(state.positions.filter(p=>p.remainingFraction>0).length>=state.rules.maxOpenPositions)break;if(state.positions.some(p=>p.address===c.address)||state.trades.some(t=>t.type==='paper_buy'&&t.address===c.address))continue;try{paperBuy(c.address,c,state.rules.stakeGbp,'Automatic '+(c.modelLabel||'scanner')+' paper entry; score '+c.score);marketCache[c.address]=c}catch(e){addEvent('Skipped '+c.symbol+': '+e.message,'warning')}}}persist()}catch(e){lastDiscoveryError=e.message;const at=new Date().toISOString();state.discoveryDiagnostics={...(state.discoveryDiagnostics||{}),lastAttemptAt:at,lastError:e.message,retainedCandidates:state.candidates?.length||0};addEvent('Scanner error: '+e.message+'; retaining '+(state.candidates?.length||0)+' previous candidates.','warning');lastDiscoveryAt=at;persist();console.error('discovery scan failed:',e)}finally{discoveryBusy=false}}
 async function priceScan(){if(scanBusy)return;scanBusy=true;try{for(const p of state.positions.filter(x=>x.remainingFraction>0)){try{marketCache[p.address]=await getTokenMarket(p.address);recordObservation(marketCache[p.address],null)}catch(e){marketCache[p.address]={...(marketCache[p.address]||{}),address:p.address,error:e.message}}const m=marketCache[p.address];if(!m?.priceUsd)continue;const result=evaluatePosition(p,m.priceUsd,state.rules);p.peakPrice=result.position?.peakPrice||p.peakPrice;if(result.action==='sell_partial'||result.action==='sell_all'){p.firstTargetHit=result.position.firstTargetHit;paperSell(p,result.fraction,m.priceUsd,result.reason)}}lastScanAt=new Date().toISOString();persist()}finally{scanBusy=false}}
-restoreRecoverySeed();\nconst server=http.createServer(async(req,res)=>{try{if(!authorized(req,res))return;const url=new URL(req.url,`http://${req.headers.host||'localhost'}`);if(url.pathname.startsWith('/api/'))return await api(req,res,url);let pathname=decodeURIComponent(url.pathname);if(pathname==='/')pathname='/index.html';const file=path.resolve(PUBLIC_DIR,`.${pathname}`);if(!file.startsWith(PUBLIC_DIR+path.sep)&&file!==path.join(PUBLIC_DIR,'index.html'))return send(res,403,{error:'Forbidden'});if(!fs.existsSync(file)||!fs.statSync(file).isFile())return send(res,404,{error:'Not found'});res.writeHead(200,{'content-type':mime[path.extname(file)]||'application/octet-stream','cache-control':path.extname(file)==='.html'?'no-cache':'public, max-age=3600'});fs.createReadStream(file).pipe(res)}catch(e){send(res,500,{error:e.message||'Internal server error'})}});
+const server=http.createServer(async(req,res)=>{try{if(!authorized(req,res))return;const url=new URL(req.url,`http://${req.headers.host||'localhost'}`);if(url.pathname.startsWith('/api/'))return await api(req,res,url);let pathname=decodeURIComponent(url.pathname);if(pathname==='/')pathname='/index.html';const file=path.resolve(PUBLIC_DIR,`.${pathname}`);if(!file.startsWith(PUBLIC_DIR+path.sep)&&file!==path.join(PUBLIC_DIR,'index.html'))return send(res,403,{error:'Forbidden'});if(!fs.existsSync(file)||!fs.statSync(file).isFile())return send(res,404,{error:'Not found'});res.writeHead(200,{'content-type':mime[path.extname(file)]||'application/octet-stream','cache-control':path.extname(file)==='.html'?'no-cache':'public, max-age=3600'});fs.createReadStream(file).pipe(res)}catch(e){send(res,500,{error:e.message||'Internal server error'})}});
 setInterval(()=>priceScan().catch(e=>console.error('price scan',e)),POLL_MS);setInterval(()=>{if(state.scanner.enabled)discoveryScan().catch(e=>console.error('discovery',e))},Math.max(300000,Number(state.scanner.scanIntervalSeconds||300)*1000));priceScan();server.listen(PORT,'0.0.0.0',()=>console.log(`PumpWatch V3 listening on ${PORT}; ${APP_PASSWORD?'password protection enabled':'WARNING: no APP_PASSWORD set; keep private'}`));
