@@ -1,7 +1,7 @@
 // Shared conservative limiter for every DexPaprika REST call in this process.
 // Keyless limits are shared by outbound IP, so do not burst per-token fallback calls.
 const WINDOW_MS = 60_000;
-const LIMITS = { keyed: { minIntervalMs: 1_250, maxPerMinute: 48 }, keyless: { minIntervalMs: 4_100, maxPerMinute: 14 } };
+const LIMITS = { keyed: { minIntervalMs: 2_400, maxPerMinute: 25 }, keyless: { minIntervalMs: 5_000, maxPerMinute: 12 } };
 let queue = Promise.resolve();
 let lastRequestAt = 0;
 let requestTimes = [];
@@ -30,7 +30,7 @@ export function dexPaprikaFetch(url, options = {}) {
     const afterWait = Date.now();
     if (afterWait < blockedUntil) throw new Error('DexPaprika cooldown (' + Math.ceil((blockedUntil - afterWait) / 1000) + 's remaining): ' + blockedReason);
     requestTimes = requestTimes.filter(t => afterWait - t < WINDOW_MS);
-    if (requestTimes.length >= limits.maxPerMinute) throw new Error('DexPaprika safety limit reached (6 requests/minute); waiting for next window');
+    if (requestTimes.length >= limits.maxPerMinute) throw new Error('DexPaprika safety limit reached (' + limits.maxPerMinute + ' requests/minute); waiting for next window');
     lastRequestAt = afterWait;
     requestTimes.push(afterWait);
     const headers = { accept: 'application/json', 'user-agent': 'PumpWatch/4.0', ...(options.headers || {}) };
