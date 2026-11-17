@@ -43,7 +43,7 @@ test('wallet-flow quality metrics describe observed buyer concentration',()=>{
  buffer.add(trade('a1','wallet-a',100));buffer.add(trade('a2','wallet-a',50));
  buffer.add(trade('b1','wallet-b',50));buffer.add(trade('c1','wallet-c',50));
  const f=calculateFeatures(buffer,'mint-wallets',Date.parse(at));
- assert.equal(f.topBuyerShare5m,.4);
+ assert.equal(f.topBuyerShare5m,.6);
  assert.equal(f.top3BuyerShare5m,1);
  assert.equal(f.repeatBuyerShare5m,.5);
  assert.equal(f.buyerBreadth5m,.75);
