@@ -48,3 +48,12 @@ test('wallet-flow quality metrics describe observed buyer concentration',()=>{
  assert.equal(f.repeatBuyerShare5m,.5);
  assert.equal(f.buyerBreadth5m,.75);
 });
+
+test('same-slot buyer concentration is surfaced as a burst heuristic',()=>{
+ const buffer=createEventBuffer(),at='2026-11-17T12:00:00.000Z';
+ const trade=(id,trader,usd,slot)=>({id,mint:'mint-slots',side:'buy',trader,usd,slot,priceUsd:.01,receivedAt:at});
+ buffer.add(trade('s1','wallet-a',100,700));buffer.add(trade('s2','wallet-b',50,700));buffer.add(trade('s3','wallet-c',50,701));
+ const f=calculateFeatures(buffer,'mint-slots',Date.parse(at));
+ assert.equal(f.sameSlotBuyShare5m,.75);
+ assert.equal(f.sameSlotBuyerCount5m,2);
+});
