@@ -2,7 +2,7 @@ import { createEventBuffer } from './events.js';
 import { calculateFeatures } from './features.js';
 import { detectIgnition, detectMomentum } from './detectors.js';
 import { createShrineStream } from './shrine.js';
-import { getTokenMarket, getTokenMarkets } from '../market.js';
+import { getTokenMarket, getTokenMarkets, hasFreshMarketPrice } from '../market.js';
 
 const buffer=createEventBuffer(),latestFeatures=new Map(),launches=new Map(),signals=new Map(),riskCache=new Map(),liquidityObservations=new Map(),evaluating=new Set(),marketPriceCache=new Map(),marketPriceLookups=new Map();
 const status={provider:'shrine',state:'not_started',received:0,persisted:0,lastEventAt:null,lastError:null,launches:0,signals:0,riskChecks:0,riskPasses:0,riskFailures:0,liquidityPasses:0,liquidityFailures:0,marketFailures:0,modelEvaluations:{ignition:0,momentum:0},modelEligible:{ignition:0,momentum:0},gateFailures:{ignition:{},momentum:{}},lastEvaluatedAt:null,lastEvaluatedMint:null,lastGateSnapshot:{ignition:null,momentum:null},lastSignalAt:null};
@@ -26,7 +26,7 @@ async function assessRisk(mint,market){
   const warnings=risks.filter(x=>/warn|medium/i.test(String(x.level||x.severity||'')));
   security={available:true,passed:Number.isFinite(normalized)&&normalized<=MAX_NORMALISED_RISK&&severe.length===0,score:Number.isFinite(normalized)?normalized:null,rawScore:Number.isFinite(raw)?raw:null,risks:risks.slice(0,10).map(x=>({name:x.name||x.description||'Risk flag',level:x.level||x.severity||'unknown',value:x.value||null})),severeRiskCount:severe.length,warningCount:warnings.length,provider:'RugCheck'};
  }catch(error){security.error=error.message;}
- const marketFresh=!!market?.priceUsd&&market.dataStatus!=='stale'&&Number(market.dataAgeMs||0)<=90_000;
+ const marketFresh=hasFreshMarketPrice(market);
  const value={available:security.available,passed:security.passed,score:security.score,rawScore:security.rawScore,risks:security.risks,severeRiskCount:security.severeRiskCount||0,warningCount:security.warningCount||0,provider:security.provider,error:security.error,liquidityPassed:liquidity>=MIN_LIQUIDITY_USD,liquidityUsd:liquidity,liquidityProvider:market?.marketDataSource||'DexScreener',marketDataFresh,marketDataStatus:market?.dataStatus||'unavailable',marketDataSource:market?.marketDataSource||'unknown',assessedAt:new Date().toISOString()};
  riskCache.set(mint,{at:Date.now(),value});
  status.riskChecks++;if(value.available&&value.passed)status.riskPasses++;else status.riskFailures++;
@@ -85,7 +85,7 @@ async function evaluateMint(mint){
  try{
   const features=latestFeatures.get(mint);if(!features)return;
   const market=await getTokenMarket(mint);
-  if(market.dataStatus==='stale'||!market.priceUsd||Number(market.dataAgeMs||0)>90_000){status.marketFailures++;return;}
+  if(!hasFreshMarketPrice(market)){status.marketFailures++;return;}
   const risk=assessLiquidityTrend(mint,market,await assessRisk(mint,market));
   const evaluated={...features,latestPriceUsd:market.priceUsd,symbol:features.symbol||market.symbol||'UNKNOWN',market:{priceUsd:market.priceUsd,liquidityUsd:market.liquidityUsd,volume5mUsd:market.volume5mUsd,priceChange5m:market.priceChange5m,dataStatus:market.dataStatus,source:market.marketDataSource},risk};
   const ignition=detectIgnition(evaluated,risk),momentum=detectMomentum(evaluated,risk);
@@ -106,7 +106,7 @@ async function ingestShrineTrade(event){
     let pending=marketPriceLookups.get(event.mint);
     if(!pending){
      pending=getTokenMarket(event.mint).then(market=>{
-      if(market?.priceUsd>0&&market.dataStatus!=='stale'&&Number(market.dataAgeMs||0)<=90_000){
+      if(hasFreshMarketPrice(market)){
        const value={priceUsd:Number(market.priceUsd),at:Date.now()};marketPriceCache.set(event.mint,value);return value;
       }
       return null;
