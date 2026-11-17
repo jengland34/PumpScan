@@ -2,7 +2,9 @@
 function result(model,gates,reasons,features,version){
  const failed=Object.entries(gates).filter(([,passed])=>!passed).map(([name])=>name);
  const passed=Object.values(gates).filter(Boolean).length;
- return{model,eligible:failed.length===0,score:Math.round(passed/Object.keys(gates).length*100),gates,reasons,rejectionReasons:failed,features,version};
+ // Do not retain the full feature object here: runtime attaches detector results
+ // back onto that same feature object, which would create a circular API payload.
+ return{model,eligible:failed.length===0,score:Math.round(passed/Object.keys(gates).length*100),gates,reasons,rejectionReasons:failed,version};
 }
 export function detectIgnition(f,risk={}){
  const reasons=[],priceMove=Number(f?.market?.priceChange5m??NaN);
