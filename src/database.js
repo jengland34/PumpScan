@@ -11,6 +11,9 @@ export async function initialiseDatabase(){
   pool.on('error',error=>{status={...status,connected:false,lastError:error.message};console.error('PostgreSQL pool error:',error.message)});
   await pool.query(`
     CREATE TABLE IF NOT EXISTS app_state(id SMALLINT PRIMARY KEY CHECK(id=1),payload JSONB NOT NULL,updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
+    CREATE TABLE IF NOT EXISTS raw_events(id TEXT PRIMARY KEY,chain TEXT NOT NULL,provider TEXT NOT NULL,mint TEXT NOT NULL,symbol TEXT,side TEXT NOT NULL,trader TEXT,pool TEXT,protocol TEXT,usd DOUBLE PRECISION NOT NULL,price_usd DOUBLE PRECISION,occurred_at TIMESTAMPTZ NOT NULL,received_at TIMESTAMPTZ NOT NULL,payload JSONB NOT NULL);
+    CREATE INDEX IF NOT EXISTS raw_events_mint_time_idx ON raw_events(mint,received_at DESC);
+    CREATE INDEX IF NOT EXISTS raw_events_received_idx ON raw_events(received_at DESC);
     CREATE TABLE IF NOT EXISTS tokens(address TEXT PRIMARY KEY,symbol TEXT,name TEXT,first_discovered_at TIMESTAMPTZ,last_discovered_at TIMESTAMPTZ,last_evaluated_at TIMESTAMPTZ,source TEXT,payload JSONB NOT NULL DEFAULT '{}'::jsonb);
     CREATE TABLE IF NOT EXISTS market_snapshots(address TEXT NOT NULL,observed_at TIMESTAMPTZ NOT NULL,price_usd DOUBLE PRECISION,liquidity_usd DOUBLE PRECISION,volume_5m_usd DOUBLE PRECISION,volume_24h_usd DOUBLE PRECISION,buys_5m INTEGER,sells_5m INTEGER,payload JSONB NOT NULL,PRIMARY KEY(address,observed_at));
     CREATE INDEX IF NOT EXISTS market_snapshots_observed_idx ON market_snapshots(observed_at DESC);
@@ -64,3 +67,19 @@ export async function saveDatabaseState(state){
   finally{client.release();}
 }
 export async function closeDatabase(){if(pool){await pool.end();pool=null;}}
+
+export async function persistV4Event(event) {
+  if (!pool) return false;
+  await pool.query(`INSERT INTO raw_events(id,chain,provider,mint,symbol,side,trader,pool,protocol,usd,price_usd,occurred_at,received_at,payload)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb)
+    ON CONFLICT(id) DO NOTHING`,[
+      event.id,event.chain,event.provider,event.mint,event.symbol,event.side,event.trader,event.pool,event.protocol,
+      event.usd,event.priceUsd,event.occurredAt,event.receivedAt,JSON.stringify(event)
+    ]);
+  return true;
+}
+export async function v4EventStats() {
+  if (!pool) return {configured:false,count:0};
+  const {rows}=await pool.query('SELECT count(*)::bigint AS count,max(received_at) AS last_event_at FROM raw_events');
+  return {configured:true,count:Number(rows[0]?.count||0),lastEventAt:rows[0]?.last_event_at||null};
+}
