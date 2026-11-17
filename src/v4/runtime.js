@@ -50,7 +50,7 @@ async function evaluateMint(mint){
   const market=await getTokenMarket(mint);
   if(market.dataStatus==='stale'||market.dataStatus==='partial'||!market.priceUsd){status.marketFailures++;return;}
   const risk=await assessRisk(mint,market);
-  const evaluated={...features,latestPriceUsd:market.priceUsd,symbol:features.symbol||market.symbol||'UNKNOWN',market:{priceUsd:market.priceUsd,liquidityUsd:market.liquidityUsd,volume5mUsd:market.volume5mUsd,dataStatus:market.dataStatus,source:market.marketDataSource},risk};
+  const evaluated={...features,latestPriceUsd:market.priceUsd,symbol:features.symbol||market.symbol||'UNKNOWN',market:{priceUsd:market.priceUsd,liquidityUsd:market.liquidityUsd,volume5mUsd:market.volume5mUsd,priceChange5m:market.priceChange5m,dataStatus:market.dataStatus,source:market.marketDataSource},risk};
   const ignition=detectIgnition(evaluated,risk),momentum=detectMomentum(evaluated,risk);
   evaluated.ignition=ignition;evaluated.momentum=momentum;
   latestFeatures.set(mint,evaluated);
