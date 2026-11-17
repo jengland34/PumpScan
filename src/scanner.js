@@ -24,7 +24,12 @@ export function scoreCandidate(market, report, history = [], config = {}) {
   const levels=(report?.risks||[]).map(x=>String(x.level||'').toLowerCase());
   const risk=Number.isFinite(report?.scoreNormalised)?report.scoreNormalised:null;
   const ageLimit=model==='new_launch'?cfg.newLaunchMaxAgeHours:cfg.maxEstablishedAgeHours;
-  const checks={price:Number.isFinite(market.priceUsd)&&market.priceUsd>0,liquidity:Number(market.liquidityUsd)>=cfg.minLiquidityUsd,security:report?.available===true&&risk!==null&&risk<cfg.maxRiskScore&&!levels.some(x=>['danger','critical'].includes(x)),age:age!==null&&age>=0&&age<=ageLimit&&(model!=='established'||age>cfg.newLaunchMaxAgeHours),minimumActivity:Number.isFinite(Number(market.volume5mUsd))&&Number(market.volume5mUsd)>=cfg.minVolume5mUsd};
+  const hasValue=v=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v));
+  const marketDataComplete=market.dataStatus!=='partial'&&['priceUsd','liquidityUsd','volume5mUsd','buys5m','sells5m','priceChange5m'].every(k=>hasValue(market[k]))&&(Number(market.buys5m)+Number(market.sells5m)>0);
+  const checks={price:Number.isFinite(market.priceUsd)&&market.priceUsd>0,liquidity:Number(market.liquidityUsd)>=cfg.minLiquidityUsd,security:report?.available===true&&risk!==null&&risk<cfg.maxRiskScore&&!levels.some(x=>['danger','critical'].includes(x)),age:age!==null&&age>=0&&age<=ageLimit&&(model!=='established'||age>cfg.newLaunchMaxAgeHours),marketData:marketDataComplete,minimumActivity:hasValue(market.volume5mUsd)&&Number(market.volume5mUsd)>=cfg.minVolume5mUsd};
+  const currentAt=Date.parse(market.fetchedAt||market.scannedAt||new Date().toISOString());
+  const recentHistory=history.slice(-2);
+  const historyComplete=recentHistory.length===2&&recentHistory.every((o,i)=>hasValue(o.volume5mUsd)&&hasValue(o.buys5m)&&hasValue(o.sells5m)&&hasValue(o.liquidityUsd)&&Number(o.buys5m)+Number(o.sells5m)>0&&Number.isFinite(Date.parse(o.at))&&(i===0||Date.parse(o.at)>Date.parse(recentHistory[i-1].at)))&&Number.isFinite(currentAt)&&currentAt>Date.parse(recentHistory[1].at)&&currentAt-Date.parse(recentHistory[1].at)<=15*60_000&&Date.parse(recentHistory[1].at)-Date.parse(recentHistory[0].at)<=15*60_000;
   const prev=history.length?history[history.length-1]:null,prev2=history.length>1?history[history.length-2]:null;
   const va=prev&&Number.isFinite(Number(market.volume5mUsd))?ratio(Number(market.volume5mUsd),Number(prev.volume5mUsd)):null, ba=prev&&Number.isFinite(Number(market.buys5m))?ratio(Number(market.buys5m),Number(prev.buys5m)):null;
   const lc=prev&&prev.liquidityUsd>0?(market.liquidityUsd/prev.liquidityUsd-1)*100:null;
@@ -53,9 +58,9 @@ export function scoreCandidate(market, report, history = [], config = {}) {
   const raw=Object.values(signals).reduce((s,n)=>s+n,0),score=Math.max(0,Math.min(100,raw));
   const marketSentimentScore=Math.max(0,Math.min(100,Object.entries(signals).filter(([k])=>k!=='extensionPenalty').reduce((sum,[,v])=>sum+Math.max(0,v),0)));
   const sentimentBasis=model==='new_launch'?'Buy pressure, buyer acceleration, volume acceleration, price action and liquidity stability':'Volume acceleration, buy pressure, buyer acceleration, price action and liquidity stability';
-  const safetyPassed=checks.price&&checks.liquidity&&checks.security&&checks.age,historyReady=history.length>=2;
+  const safetyPassed=checks.price&&checks.liquidity&&checks.security&&checks.age,historyReady=marketDataComplete&&historyComplete;
   const requiredScore=model==='new_launch'?cfg.minEntryScore:cfg.minEstablishedEntryScore;
-  const passed=safetyPassed&&checks.minimumActivity&&historyReady&&score>=requiredScore;
+  const passed=safetyPassed&&checks.marketData&&checks.minimumActivity&&historyReady&&score>=requiredScore;
   return {model,modelLabel:model==='new_launch'?'New launch':'Established',score,marketSentimentScore,sentimentBasis,minEntryScore:requiredScore,checks,safetyPassed,historyReady,observations:history.length+1,passed,signals,metrics:{buyRatio,volumeAcceleration:va,buyerAcceleration:ba,liquidityChangePct:lc,volumeTrend,buyerTrend,ageLimitHours:ageLimit},rejectionReasons:Object.entries(checks).filter(([,v])=>!v).map(([k])=>k).concat(!historyReady?['history']:[],score<requiredScore?['entry_score']:[])};
 }
 
@@ -118,16 +123,29 @@ function geckoMarketFallback(item){
 async function mapLimit(items,concurrency,fn){const out=new Array(items.length);let next=0;await Promise.all(Array.from({length:Math.min(concurrency,items.length)},async()=>{while(true){const i=next++;if(i>=items.length)return;try{out[i]=await fn(items[i])}catch(e){out[i]={address:items[i].tokenAddress,symbol:items[i].symbol||'UNKNOWN',name:items[i].name||'Unknown token',source:items[i].sources.join(' + '),error:e.message,passed:false,safetyPassed:false,score:0,checks:{price:false,liquidity:false,security:false,age:false,minimumActivity:false},rejectionReasons:['market_data']};}}}));return out;}
 
 export async function refreshCandidates(items=[],config={},historyByAddress={}){
- const selected=items.filter(x=>x?.tokenAddress||x?.address).map(x=>({tokenAddress:x.tokenAddress||x.address,symbol:x.symbol,name:x.name,sources:Array.isArray(x.sources)?x.sources:[x.source||'Previously discovered'],poolCreatedAt:x.poolCreatedAt||x.pairCreatedAt||null}));
+ const selected=items.filter(x=>x?.tokenAddress||x?.address).map(x=>({tokenAddress:x.tokenAddress||x.address,symbol:x.symbol,name:x.name,sources:Array.isArray(x.sources)?x.sources:[x.source||'Previously discovered'],poolCreatedAt:x.poolCreatedAt||x.pairCreatedAt||null,geckoPool:x.geckoPool||null}));
  const marketResults=await getTokenMarkets(selected.map(item=>item.tokenAddress));
  const candidates=await mapLimit(selected,3,async item=>{
   const [marketResult,report]=await Promise.all([Promise.resolve(marketResults.get(item.tokenAddress)||{error:new Error('Market data result missing')}),rugcheck(item.tokenAddress)]);
-  const market=marketResult.value;
+  let market=marketResult.value;
+  if((!market||market.dataStatus==='stale')&&item.geckoPool?.address){
+    try {
+      const response=await json(GT+'/networks/solana/pools/'+encodeURIComponent(item.geckoPool.address)+'?include=base_token,quote_token,dex',10000);
+      const a=response.data?.attributes||response.attributes||{};
+      const volume=a.volume_usd||{},tx=a.transactions||{},change=a.price_change_percentage||{};
+      const price=Number(a.base_token_price_usd),liquidity=Number(a.reserve_in_usd);
+      if(price>0&&liquidity>=0){
+        const v5=volume.m5,buys=tx.m5?.buys,sells=tx.m5?.sells,change5=change.m5;
+        const complete=[v5,buys,sells,change5].every(v=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v)));
+        market={address:item.tokenAddress,name:item.name||'Unknown token',symbol:item.symbol||'TOKEN',priceUsd:price,liquidityUsd:liquidity,volume24hUsd:Number(volume.h24||0),marketCapUsd:0,pairAddress:item.geckoPool.address,dexId:a.dex_id||'GeckoTerminal',url:null,priceChange24h:Number(change.h24||0),priceChange5m:complete?Number(change5):null,volume5mUsd:complete?Number(v5):null,buys5m:complete?Number(buys):null,sells5m:complete?Number(sells):null,pairCreatedAt:a.pool_created_at?Date.parse(a.pool_created_at):null,fetchedAt:new Date().toISOString(),dataStatus:complete?'live':'partial',dataAgeMs:0,marketDataSource:complete?'GeckoTerminal fallback':'GeckoTerminal partial fallback'};
+      }
+    } catch {}
+  }
   if(!market||market.dataStatus==='stale')throw new Error('Market data unavailable or stale: '+(market?.dataError||marketResult.error?.message||'no fresh market snapshot'));
   const feedCreatedAt=item.poolCreatedAt?Date.parse(item.poolCreatedAt):null;
     const pairCreatedAt=Number.isFinite(feedCreatedAt)&&feedCreatedAt>0?feedCreatedAt:market.pairCreatedAt||null;
   const pairAgeHours=pairCreatedAt?Math.max(0,(Date.now()-pairCreatedAt)/3600000):null;
-  const candidate={...market,address:item.tokenAddress,symbol:market.symbol||item.symbol||'UNKNOWN',name:market.name||item.name||'Unknown token',pairAgeHours,pairCreatedAt,rugcheck:report,source:item.sources.join(' + '),scannedAt:new Date().toISOString()};
+  const candidate={...market,address:item.tokenAddress,symbol:market.symbol||item.symbol||'UNKNOWN',name:market.name||item.name||'Unknown token',pairAgeHours,pairCreatedAt,rugcheck:report,source:item.sources.join(' + '),geckoPool:item.geckoPool||null,scannedAt:new Date().toISOString()};
   return {...candidate,...scoreCandidate(candidate,report,historyByAddress[item.tokenAddress]||[],config)};
  });
  return candidates.map((c,i)=>({...c,rejectionReasons:c.rejectionReasons||['market_data'],source:selected[i]?.sources?.join(' + ')||'Previously discovered'}));
@@ -146,7 +164,7 @@ export async function discoverCandidates(limit=60,config={},historyByAddress={},
     const feedCreatedAt=item.poolCreatedAt?Date.parse(item.poolCreatedAt):null;
     const pairCreatedAt=Number.isFinite(feedCreatedAt)&&feedCreatedAt>0?feedCreatedAt:market.pairCreatedAt||null;
     const pairAgeHours=pairCreatedAt?Math.max(0,(Date.now()-pairCreatedAt)/3600000):null;
-    const candidate={...market,address:item.tokenAddress,symbol:market.symbol||item.symbol||'UNKNOWN',name:market.name||item.name||'Unknown token',pairAgeHours,pairCreatedAt,rugcheck:report,source:item.sources.join(' + '),jupiterOrganicScore:item.jupiterOrganicScore??null,jupiterVerified:item.jupiterVerified??false,jupiterAudit:item.jupiterAudit??null,socialSentiment:item.socialSentiment??null,scannedAt:new Date().toISOString()};
+    const candidate={...market,address:item.tokenAddress,symbol:market.symbol||item.symbol||'UNKNOWN',name:market.name||item.name||'Unknown token',pairAgeHours,pairCreatedAt,rugcheck:report,source:item.sources.join(' + '),geckoPool:item.geckoPool||null,jupiterOrganicScore:item.jupiterOrganicScore??null,jupiterVerified:item.jupiterVerified??false,jupiterAudit:item.jupiterAudit??null,socialSentiment:item.socialSentiment??null,scannedAt:new Date().toISOString()};
     const scored=scoreCandidate(candidate,report,historyByAddress[item.tokenAddress]||[],config);
     return {...candidate,...scored};
   });
