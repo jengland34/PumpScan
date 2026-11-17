@@ -4,7 +4,7 @@ import { scoreCandidate } from '../src/scanner.js';
 import { updateTokenTracker, telemetrySummary, trimTracking } from '../src/telemetry.js';
 const market={address:'Mint111111111111111111111111111111111111',symbol:'TEST',name:'Test',priceUsd:.001,liquidityUsd:25000,volume5mUsd:9000,buys5m:90,sells5m:10,priceChange5m:6,pairAgeHours:8};
 const safe={available:true,scoreNormalised:12,risks:[]};
-const history=[{volume5mUsd:4000,buys5m:35,liquidityUsd:24000},{volume5mUsd:6000,buys5m:55,liquidityUsd:24500}];
+const history=[{at:new Date(Date.now()-600000).toISOString(),volume5mUsd:4000,buys5m:35,sells5m:12,liquidityUsd:24000},{at:new Date(Date.now()-300000).toISOString(),volume5mUsd:6000,buys5m:55,sells5m:18,liquidityUsd:24500}];
 test('new-launch model labels young pairs',()=>assert.equal(scoreCandidate(market,safe,history).model,'new_launch'));
 test('unknown security data is a hard fail',()=>assert.equal(scoreCandidate(market,{available:false},history).safetyPassed,false));
 test('two historical observations required',()=>assert.equal(scoreCandidate(market,safe,[]).historyReady,false));
@@ -17,3 +17,6 @@ test('tracking cap keeps most recently evaluated tokens',()=>{const t=trimTracki
 
 test('missing Gecko short-interval metrics fail the activity gate',()=>{const r=scoreCandidate({...market,volume5mUsd:null,buys5m:null,sells5m:null,priceChange5m:null},safe,history);assert.equal(r.checks.minimumActivity,false);assert.equal(r.passed,false)});
 test('danger and critical RugCheck risks always fail security',()=>{for(const level of ['danger','critical'])assert.equal(scoreCandidate(market,{...safe,scoreNormalised:1,risks:[{level,name:'test'}]},history).checks.security,false)});
+
+test('partial provider data cannot qualify or claim history readiness',()=>{const r=scoreCandidate({...market,dataStatus:'partial',volume5mUsd:null,buys5m:null,sells5m:null,priceChange5m:null},safe,history);assert.equal(r.checks.marketData,false);assert.equal(r.historyReady,false);assert.equal(r.passed,false)});
+test('history must be consecutive and recent',()=>{const old=[{...history[0],at:new Date(Date.now()-3600000).toISOString()},history[1]];const r=scoreCandidate(market,safe,old);assert.equal(r.historyReady,false);assert.equal(r.passed,false)});
