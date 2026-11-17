@@ -4,7 +4,7 @@ import { detectIgnition, detectMomentum } from './detectors.js';
 import { createShrineStream } from './shrine.js';
 import { getTokenMarket, getTokenMarkets } from '../market.js';
 
-const buffer=createEventBuffer(),latestFeatures=new Map(),launches=new Map(),signals=new Map(),riskCache=new Map(),liquidityObservations=new Map(),evaluating=new Set();
+const buffer=createEventBuffer(),latestFeatures=new Map(),launches=new Map(),signals=new Map(),riskCache=new Map(),liquidityObservations=new Map(),evaluating=new Set(),marketPriceCache=new Map(),marketPriceLookups=new Map();
 const status={provider:'shrine',state:'not_started',received:0,persisted:0,lastEventAt:null,lastError:null,launches:0,signals:0,riskChecks:0,riskPasses:0,riskFailures:0,liquidityPasses:0,liquidityFailures:0,marketFailures:0,modelEvaluations:{ignition:0,momentum:0},modelEligible:{ignition:0,momentum:0},gateFailures:{ignition:{},momentum:{}},lastEvaluatedAt:null,lastEvaluatedMint:null,lastGateSnapshot:{ignition:null,momentum:null},lastSignalAt:null};
 let stream=null,persistEvent=async()=>{},persistSignal=async()=>{};
 const SIGNAL_COOLDOWN_MS=15*60_000,MAX_SIGNALS=2000,MIN_LIQUIDITY_USD=5000,MAX_NORMALISED_RISK=40;
@@ -98,14 +98,36 @@ async function evaluateMint(mint){
  }catch(error){status.lastError='Evaluation '+mint.slice(0,8)+': '+error.message;}
  finally{evaluating.delete(mint);}
 }
-export function startV4({apiKey=process.env.SHRINE_API_KEY,saveEvent=async()=>{},saveSignal=async()=>{}}={}){
- if(stream)return stream;persistEvent=saveEvent;persistSignal=saveSignal;
- stream=createShrineStream({apiKey,onLaunch:launch=>{launches.set(launch.mint,launch);status.launches=launches.size;},onTrade:event=>{
-  if(!buffer.add(event))return;status.received++;status.lastEventAt=event.receivedAt;
+async function ingestShrineTrade(event){
+ try{
+  if(!(event.usd>0)){
+   let cached=marketPriceCache.get(event.mint);
+   if(!cached||Date.now()-cached.at>10000){
+    let pending=marketPriceLookups.get(event.mint);
+    if(!pending){
+     pending=getTokenMarket(event.mint).then(market=>{
+      if(market?.priceUsd>0&&!['stale','partial'].includes(market.dataStatus)){
+       const value={priceUsd:Number(market.priceUsd),at:Date.now()};marketPriceCache.set(event.mint,value);return value;
+      }
+      return null;
+     }).catch(()=>null).finally(()=>marketPriceLookups.delete(event.mint));
+     marketPriceLookups.set(event.mint,pending);
+    }
+    cached=await pending;
+   }
+   if(cached?.priceUsd>0&&event.baseAmount>0){event.priceUsd=cached.priceUsd;event.usd=event.baseAmount*cached.priceUsd;event.usdPending=false;}
+  }
+  if(!buffer.add(event))return;
+  status.received++;status.lastEventAt=event.receivedAt;
+  if(!(event.usd>0))status.unpricedTrades=(status.unpricedTrades||0)+1;
   latestFeatures.set(event.mint,{...calculateFeatures(buffer,event.mint),symbol:event.symbol||launches.get(event.mint)?.symbol||'UNKNOWN'});
   Promise.resolve(persistEvent(event)).then(ok=>{if(ok!==false)status.persisted++;}).catch(error=>{status.lastError=error.message;});
   evaluateMint(event.mint);
- },onStatus:next=>Object.assign(status,next)});return stream;
+ }catch(error){status.lastError='Trade ingestion: '+error.message;}
+}
+export function startV4({apiKey=process.env.SHRINE_API_KEY,saveEvent=async()=>{},saveSignal=async()=>{}}={}){
+ if(stream)return stream;persistEvent=saveEvent;persistSignal=saveSignal;
+ stream=createShrineStream({apiKey,onLaunch:launch=>{launches.set(launch.mint,launch);status.launches=launches.size;},onTrade:event=>{ingestShrineTrade(event);},onStatus:next=>Object.assign(status,next)});return stream;
 }
 export function stopV4(){stream?.stop();stream=null;}
 export function v4Status(){return{...status,trackedTokens:buffer.tokens().length,discoveredLaunches:launches.size,mode:'paper',liveTradingAvailable:false,signalPublicationEnabled:true,signalModels:['ignition','momentum'],riskProvider:'RugCheck',liquidityProvider:'DexScreener',liquidityFloorUsd:MIN_LIQUIDITY_USD,maxNormalisedRisk:MAX_NORMALISED_RISK,liquidityShockThresholdPct:-20};}
