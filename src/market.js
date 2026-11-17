@@ -28,8 +28,10 @@ function staleSnapshot(address, entry, reason) {
 
 async function scheduledFetch(url) {
   const task = requestQueue.then(async () => {
+    if (Date.now() < globalCooldownUntil) throw new Error(`DexScreener provider cooldown (${Math.ceil((globalCooldownUntil - Date.now()) / 1000)}s remaining)`);
     const wait = Math.max(0, MIN_REQUEST_INTERVAL_MS - (Date.now() - lastRequestAt));
     if (wait) await new Promise(resolve => setTimeout(resolve, wait));
+    if (Date.now() < globalCooldownUntil) throw new Error(`DexScreener provider cooldown (${Math.ceil((globalCooldownUntil - Date.now()) / 1000)}s remaining)`);
     lastRequestAt = Date.now();
     return fetch(url, {
       headers: { accept: 'application/json', 'user-agent': 'PumpWatch/4.0' },
