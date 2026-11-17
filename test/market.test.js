@@ -38,24 +38,6 @@ test('market snapshots are fetched in batches of at most 30 mints', async () => 
   }
 });
 
-test('429 responses activate provider-wide cooldown without retry storms', async () => {
-  const originalFetch = globalThis.fetch;
-  let calls = 0;
-  globalThis.fetch = async () => {
-    calls += 1;
-    return new Response('rate limited', { status: 429, headers: { 'retry-after': '60' } });
-  };
-  try {
-    const first = await getTokenMarkets(['RateLimitMint111111111111111111111111111111']);
-    const second = await getTokenMarkets(['RateLimitMint222222222222222222222222222222']);
-    assert.ok(first.get('RateLimitMint111111111111111111111111111111').error);
-    assert.ok(second.get('RateLimitMint222222222222222222222222222222').error);
-    assert.equal(calls, 2); // DexScreener request plus one fallback; DexPaprika 429 blocks further requests
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
 
 test('fresh partial market snapshots remain usable for price enrichment', async () => {
   const originalFetch = globalThis.fetch;
@@ -73,4 +55,23 @@ test('fresh partial market snapshots remain usable for price enrichment', async 
     assert.equal(hasFreshMarketPrice(market), true);
     assert.equal(hasFreshMarketPrice({ ...market, dataStatus: 'stale' }), false);
   } finally { globalThis.fetch = originalFetch; }
+});
+
+
+test('429 responses activate provider-wide cooldown without retry storms', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response('rate limited', { status: 429, headers: { 'retry-after': '60' } });
+  };
+  try {
+    const first = await getTokenMarkets(['RateLimitMint111111111111111111111111111111']);
+    const second = await getTokenMarkets(['RateLimitMint222222222222222222222222222222']);
+    assert.ok(first.get('RateLimitMint111111111111111111111111111111').error);
+    assert.ok(second.get('RateLimitMint222222222222222222222222222222').error);
+    assert.equal(calls, 2); // DexScreener request plus one fallback; DexPaprika 429 blocks further requests
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
