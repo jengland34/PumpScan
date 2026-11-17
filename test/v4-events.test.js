@@ -5,6 +5,15 @@ import { calculateFeatures } from '../src/v4/features.js';
 import { detectIgnition, detectMomentum } from '../src/v4/detectors.js';
 
 const base={mint:'mint-1',pool:'pool-1',signature:'sig-1',txIndex:4,action:'buy',trader:'wallet-a',tokenAmount:100,quoteAmount:1,quoteMint:'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',price:0.01,timestamp:1794916800,protocol:'PUMPSWAP'};
+test('accepts Shrine documented trade payload when quote mint and USD fields are omitted',()=>{
+ const payload={protocol:'PUMPSWAP',pool:'pool-1',mint:'mint-1',signature:'sig-doc-1',is_buy:true,token_amount:1000,quote_amount:2,price:0.00002,wallet:'wallet-a',timestamp:1794916800};
+ const event=normaliseShrineTrade(payload,'2026-11-17T12:00:01Z');
+ assert.ok(event);
+ assert.equal(event.side,'buy');
+ assert.equal(event.baseAmount,1000);
+ assert.equal(event.usd,0);
+ assert.equal(event.usdPending,true);
+});
 test('normalises a Shrine trade with stablecoin quote into a canonical event',()=>{
  const event=normaliseShrineTrade(base,'2026-11-17T12:00:01Z');
  assert.equal(event.mint,'mint-1');assert.equal(event.side,'buy');assert.equal(event.trader,'wallet-a');assert.equal(event.usd,1);assert.equal(event.provider,'shrine');
