@@ -2,10 +2,10 @@ import { createEventBuffer } from './events.js';
 import { calculateFeatures } from './features.js';
 import { detectIgnition, detectMomentum } from './detectors.js';
 import { createShrineStream } from './shrine.js';
-import { getTokenMarket, getTokenMarkets, hasFreshMarketPrice } from '../market.js';
+import { getTokenMarket, getTokenMarkets, hasFreshMarketPrice, startDexPaprikaPriceStream } from '../market.js';
 
 const buffer=createEventBuffer(),latestFeatures=new Map(),launches=new Map(),signals=new Map(),riskCache=new Map(),liquidityObservations=new Map(),evaluating=new Set(),marketQueue=new Set(),marketQueuedAt=new Map();
-const status={provider:'shrine',state:'not_started',received:0,persisted:0,lastEventAt:null,lastError:null,launches:0,signals:0,riskChecks:0,riskPasses:0,riskFailures:0,liquidityPasses:0,liquidityFailures:0,marketFailures:0,modelEvaluations:{ignition:0,momentum:0},modelEligible:{ignition:0,momentum:0},gateFailures:{ignition:{},momentum:{}},lastEvaluatedAt:null,lastEvaluatedMint:null,lastGateSnapshot:{ignition:null,momentum:null},lastSignalAt:null,evaluationAttempts:0,marketLookupAttempts:0,marketLookupFailures:0,lastMarketLookupAt:null,lastMarketLookupError:null,lastEvaluationError:null,marketBatchRequests:0,marketBatchFailures:0,lastMarketBatchAt:null};
+const status={provider:'shrine',state:'not_started',received:0,persisted:0,lastEventAt:null,lastError:null,launches:0,signals:0,riskChecks:0,riskPasses:0,riskFailures:0,liquidityPasses:0,liquidityFailures:0,marketFailures:0,modelEvaluations:{ignition:0,momentum:0},modelEligible:{ignition:0,momentum:0},gateFailures:{ignition:{},momentum:{}},lastEvaluatedAt:null,lastEvaluatedMint:null,lastGateSnapshot:{ignition:null,momentum:null},lastSignalAt:null,evaluationAttempts:0,marketLookupAttempts:0,marketLookupFailures:0,lastMarketLookupAt:null,lastMarketLookupError:null,lastEvaluationError:null,marketBatchRequests:0,marketBatchFailures:0,lastMarketBatchAt:null,priceStreamState:'not_started',priceStreamError:null,priceStreamUpdates:0};
 let stream=null,persistEvent=async()=>{},persistSignal=async()=>{};
 const SIGNAL_COOLDOWN_MS=15*60_000,MAX_SIGNALS=2000,MIN_LIQUIDITY_USD=5000,MAX_NORMALISED_RISK=40;
 
@@ -137,10 +137,20 @@ async function ingestShrineTrade(event){
 }
 export function startV4({apiKey=process.env.SHRINE_API_KEY,saveEvent=async()=>{},saveSignal=async()=>{}}={}){
  if(stream)return stream;persistEvent=saveEvent;persistSignal=saveSignal;
- stream=createShrineStream({apiKey,onLaunch:launch=>{launches.set(launch.mint,launch);status.launches=launches.size;},onTrade:event=>{ingestShrineTrade(event);},onStatus:next=>Object.assign(status,next)});return stream;
+ stream=createShrineStream({apiKey,onLaunch:launch=>{
+  launches.set(launch.mint,launch);status.launches=launches.size;
+  startDexPaprikaPriceStream([launch.mint],async(mint,market)=>{
+   status.priceStreamUpdates++;status.priceStreamState='connected';status.priceStreamError=null;
+   const enriched=buffer.enrichUnpriced(mint,Number(market.priceUsd));
+   if(enriched)status.unpricedTrades=Math.max(0,(status.unpricedTrades||0)-enriched);
+   const features={...calculateFeatures(buffer,mint),symbol:latestFeatures.get(mint)?.symbol||launches.get(mint)?.symbol||market.symbol||'UNKNOWN'};
+   latestFeatures.set(mint,features);
+   await evaluateMint(mint,market);
+  },next=>{status.priceStreamState=next.state;status.priceStreamError=next.detail||null;});
+ },onTrade:event=>{ingestShrineTrade(event);},onStatus:next=>Object.assign(status,next)});return stream;
 }
 export function stopV4(){stream?.stop();stream=null;}
-export function v4Status(){return{...status,trackedTokens:buffer.tokens().length,discoveredLaunches:launches.size,mode:'paper',liveTradingAvailable:false,signalPublicationEnabled:true,signalModels:['ignition','momentum'],riskProvider:'RugCheck',liquidityProvider:'DexScreener',liquidityFloorUsd:MIN_LIQUIDITY_USD,maxNormalisedRisk:MAX_NORMALISED_RISK,liquidityShockThresholdPct:-20};}
+export function v4Status(){return{...status,trackedTokens:buffer.tokens().length,discoveredLaunches:launches.size,mode:'paper',liveTradingAvailable:false,signalPublicationEnabled:true,signalModels:['ignition','momentum'],riskProvider:'RugCheck',liquidityProvider:'DexPaprika primary / DexScreener fallback',priceProvider:'DexPaprika SSE primary',liquidityFloorUsd:MIN_LIQUIDITY_USD,maxNormalisedRisk:MAX_NORMALISED_RISK,liquidityShockThresholdPct:-20};}
 export function v4Features(mint){return latestFeatures.get(mint)||null;}
 export function v4TopActivity(limit=50){return[...latestFeatures.values()].sort((a,b)=>(b.netBuyUsd1m||0)-(a.netBuyUsd1m||0)).slice(0,limit);}
 export function v4RecentLaunches(limit=100){return[...launches.values()].slice(-limit).reverse();}
