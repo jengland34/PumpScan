@@ -5,7 +5,7 @@ import { createShrineStream } from './shrine.js';
 import { getTokenMarket, getTokenMarkets, hasFreshMarketPrice } from '../market.js';
 
 const buffer=createEventBuffer(),latestFeatures=new Map(),launches=new Map(),signals=new Map(),riskCache=new Map(),liquidityObservations=new Map(),evaluating=new Set(),marketPriceCache=new Map(),marketPriceLookups=new Map();
-const status={provider:'shrine',state:'not_started',received:0,persisted:0,lastEventAt:null,lastError:null,launches:0,signals:0,riskChecks:0,riskPasses:0,riskFailures:0,liquidityPasses:0,liquidityFailures:0,marketFailures:0,modelEvaluations:{ignition:0,momentum:0},modelEligible:{ignition:0,momentum:0},gateFailures:{ignition:{},momentum:{}},lastEvaluatedAt:null,lastEvaluatedMint:null,lastGateSnapshot:{ignition:null,momentum:null},lastSignalAt:null};
+const status={provider:'shrine',state:'not_started',received:0,persisted:0,lastEventAt:null,lastError:null,launches:0,signals:0,riskChecks:0,riskPasses:0,riskFailures:0,liquidityPasses:0,liquidityFailures:0,marketFailures:0,modelEvaluations:{ignition:0,momentum:0},modelEligible:{ignition:0,momentum:0},gateFailures:{ignition:{},momentum:{}},lastEvaluatedAt:null,lastEvaluatedMint:null,lastGateSnapshot:{ignition:null,momentum:null},lastSignalAt:null,evaluationAttempts:0,marketLookupAttempts:0,marketLookupFailures:0,lastMarketLookupAt:null,lastMarketLookupError:null,lastEvaluationError:null};
 let stream=null,persistEvent=async()=>{},persistSignal=async()=>{};
 const SIGNAL_COOLDOWN_MS=15*60_000,MAX_SIGNALS=2000,MIN_LIQUIDITY_USD=5000,MAX_NORMALISED_RISK=40;
 
@@ -81,7 +81,7 @@ function recordModelEvaluation(result,features){
  status.lastGateSnapshot[model]={mint:features.mint,symbol:features.symbol||'UNKNOWN',at:now,eligible:!!result.eligible,score:result.score,gates:{...gates},rejectionReasons:failures};
 }
 async function evaluateMint(mint){
- if(evaluating.has(mint))return;evaluating.add(mint);
+ if(evaluating.has(mint))return;evaluating.add(mint);status.evaluationAttempts++;
  try{
   const features=latestFeatures.get(mint);if(!features)return;
   const market=await getTokenMarket(mint);
@@ -95,7 +95,7 @@ async function evaluateMint(mint){
   if(ignition.eligible)publishSignal(ignition,risk,evaluated,market);
   if(momentum.eligible)publishSignal(momentum,risk,evaluated,market);
   for(const signal of signals.values())if(signal.mint===mint)updateSignalOutcome(signal,market,Date.now());
- }catch(error){status.lastError='Evaluation '+mint.slice(0,8)+': '+error.message;}
+ }catch(error){status.lastEvaluationError='Evaluation '+mint.slice(0,8)+': '+error.message;status.lastError=status.lastEvaluationError;}
  finally{evaluating.delete(mint);}
 }
 async function ingestShrineTrade(event){
@@ -105,12 +105,13 @@ async function ingestShrineTrade(event){
    if(!cached||Date.now()-cached.at>10000){
     let pending=marketPriceLookups.get(event.mint);
     if(!pending){
+     status.marketLookupAttempts++;status.lastMarketLookupAt=new Date().toISOString();
      pending=getTokenMarket(event.mint).then(market=>{
       if(hasFreshMarketPrice(market)){
        const value={priceUsd:Number(market.priceUsd),at:Date.now()};marketPriceCache.set(event.mint,value);return value;
       }
       return null;
-     }).catch(()=>null).finally(()=>marketPriceLookups.delete(event.mint));
+     }).catch(error=>{status.marketLookupFailures++;status.lastMarketLookupError=error.message;return null;}).finally(()=>marketPriceLookups.delete(event.mint));
      marketPriceLookups.set(event.mint,pending);
     }
     cached=await pending;
