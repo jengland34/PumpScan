@@ -166,10 +166,15 @@ export async function getTokenMarkets(addresses = []) {
     const batch = pending.slice(i, i + MAX_BATCH_SIZE);
     const blockedUntil = Math.max(globalCooldownUntil, ...batch.map(a => cooldowns.get(a) || 0));
     if (Date.now() < blockedUntil) {
-      const reason = `DexScreener cooldown (${Math.ceil((blockedUntil - Date.now()) / 1000)}s remaining)`;
+      const reason = 'DexScreener cooldown (' + Math.ceil((blockedUntil - Date.now()) / 1000) + 's remaining)';
       for (const address of batch) {
-        const stale = staleSnapshot(address, cache.get(address), reason);
-        result.set(address, stale ? { value: stale } : { error: new Error(reason) });
+        try {
+          const value = await fetchDexPaprika(address);
+          result.set(address, { value });
+        } catch (fallbackError) {
+          const stale = staleSnapshot(address, cache.get(address), reason + '; ' + fallbackError.message);
+          result.set(address, stale ? { value: stale } : { error: new Error(reason + '; ' + fallbackError.message) });
+        }
       }
       continue;
     }
