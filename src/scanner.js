@@ -22,11 +22,14 @@ export function scoreCandidate(market, report, history = [], config = {}) {
   const model=age!==null&&age<=cfg.newLaunchMaxAgeHours?'new_launch':'established';
   const levels=(report?.risks||[]).map(x=>String(x.level||'').toLowerCase());
   const risk=Number.isFinite(report?.scoreNormalised)?report.scoreNormalised:null;
-  const checks={price:Number.isFinite(market.priceUsd)&&market.priceUsd>0,liquidity:Number(market.liquidityUsd)>=cfg.minLiquidityUsd,security:report?.available===true&&risk!==null&&risk<cfg.maxRiskScore&&!levels.some(x=>['danger','critical'].includes(x)),age:age!==null&&age>=0&&age<=cfg.maxPairAgeHours,minimumActivity:Number.isFinite(Number(market.volume5mUsd))&&Number(market.volume5mUsd)>=cfg.minVolume5mUsd};
-  const prev=history.length?history[history.length-1]:null;
+  const ageLimit=model==='new_launch'?cfg.newLaunchMaxAgeHours:cfg.maxEstablishedAgeHours;
+  const checks={price:Number.isFinite(market.priceUsd)&&market.priceUsd>0,liquidity:Number(market.liquidityUsd)>=cfg.minLiquidityUsd,security:report?.available===true&&risk!==null&&risk<cfg.maxRiskScore&&!levels.some(x=>['danger','critical'].includes(x)),age:age!==null&&age>=0&&age<=ageLimit&&(model!=='established'||age>cfg.newLaunchMaxAgeHours),minimumActivity:Number.isFinite(Number(market.volume5mUsd))&&Number(market.volume5mUsd)>=cfg.minVolume5mUsd};
+  const prev=history.length?history[history.length-1]:null,prev2=history.length>1?history[history.length-2]:null;
   const va=prev&&Number.isFinite(Number(market.volume5mUsd))?ratio(Number(market.volume5mUsd),Number(prev.volume5mUsd)):null, ba=prev&&Number.isFinite(Number(market.buys5m))?ratio(Number(market.buys5m),Number(prev.buys5m)):null;
   const lc=prev&&prev.liquidityUsd>0?(market.liquidityUsd/prev.liquidityUsd-1)*100:null;
   const buys=Number(market.buys5m),sells=Number(market.sells5m),hasFlow=Number.isFinite(buys)&&Number.isFinite(sells)&&buys+sells>0,buyRatio=hasFlow?buys/(buys+sells):0,pc=market.priceChange5m===null||market.priceChange5m===undefined||market.priceChange5m===''?NaN:Number(market.priceChange5m);
+  const volumeTrend=prev2&&prev&&Number(prev.volume5mUsd)>0&&Number(prev2.volume5mUsd)>0?Number(market.volume5mUsd)>=Number(prev.volume5mUsd)&&Number(prev.volume5mUsd)>=Number(prev2.volume5mUsd):null;
+  const buyerTrend=prev2&&prev&&Number(prev.buys5m)>=0&&Number(prev2.buys5m)>=0?Number(market.buys5m)>=Number(prev.buys5m)&&Number(prev.buys5m)>=Number(prev2.buys5m):null;
   const signals={};
   if(model==='new_launch'){
     signals.buyPressure=!hasFlow?0:buyRatio>=.70?25:buyRatio>=.60?18:buyRatio>=.52?9:0;
@@ -35,6 +38,7 @@ export function scoreCandidate(market, report, history = [], config = {}) {
     signals.priceAction=Number.isFinite(pc)?(pc>=1&&pc<=10?10:pc>10&&pc<=18?5:pc>=0&&pc<1?4:0):0;
     signals.liquidityStability=lc===null?0:lc>=-2?10:lc>=-7?4:0;
     signals.activity=Number.isFinite(Number(market.volume5mUsd))? (market.volume5mUsd>=cfg.minVolume5mUsd*3?5:market.volume5mUsd>=cfg.minVolume5mUsd*1.5?4:market.volume5mUsd>=cfg.minVolume5mUsd?2:0):0;
+    signals.momentumConsistency=volumeTrend===true&&buyerTrend===true?10:volumeTrend===true||buyerTrend===true?5:0;
   } else {
     signals.volumeAcceleration=va===null?0:va>=2?25:va>=1.35?18:va>=1.1?8:0;
     signals.buyPressure=!hasFlow?0:buyRatio>=.70?15:buyRatio>=.60?11:buyRatio>=.52?5:0;
@@ -42,14 +46,16 @@ export function scoreCandidate(market, report, history = [], config = {}) {
     signals.priceAction=Number.isFinite(pc)?(pc>=1&&pc<=8?20:pc>8&&pc<=15?12:pc>=0&&pc<1?5:0):0;
     signals.liquidityStability=lc===null?0:lc>=-2?10:lc>=-7?4:0;
     signals.activity=Number.isFinite(Number(market.volume5mUsd))? (market.volume5mUsd>=cfg.minVolume5mUsd*3?10:market.volume5mUsd>=cfg.minVolume5mUsd*1.5?7:market.volume5mUsd>=cfg.minVolume5mUsd?4:0):0;
+    signals.momentumConsistency=volumeTrend===true&&buyerTrend===true?12:volumeTrend===true||buyerTrend===true?6:0;
   }
   signals.extensionPenalty=Number.isFinite(pc)?(pc>30?-25:pc>20?-12:0):0;
   const raw=Object.values(signals).reduce((s,n)=>s+n,0),score=Math.max(0,Math.min(100,raw));
   const marketSentimentScore=Math.max(0,Math.min(100,Object.entries(signals).filter(([k])=>k!=='extensionPenalty').reduce((sum,[,v])=>sum+Math.max(0,v),0)));
   const sentimentBasis=model==='new_launch'?'Buy pressure, buyer acceleration, volume acceleration, price action and liquidity stability':'Volume acceleration, buy pressure, buyer acceleration, price action and liquidity stability';
   const safetyPassed=checks.price&&checks.liquidity&&checks.security&&checks.age,historyReady=history.length>=2;
-  const passed=safetyPassed&&checks.minimumActivity&&historyReady&&score>=cfg.minEntryScore;
-  return {model,modelLabel:model==='new_launch'?'New launch':'Established',score,marketSentimentScore,sentimentBasis,minEntryScore:cfg.minEntryScore,checks,safetyPassed,historyReady,observations:history.length+1,passed,signals,metrics:{buyRatio,volumeAcceleration:va,buyerAcceleration:ba,liquidityChangePct:lc},rejectionReasons:Object.entries(checks).filter(([,v])=>!v).map(([k])=>k).concat(!historyReady?['history']:[],score<cfg.minEntryScore?['entry_score']:[])};
+  const requiredScore=model==='new_launch'?cfg.minEntryScore:cfg.minEstablishedEntryScore;
+  const passed=safetyPassed&&checks.minimumActivity&&historyReady&&score>=requiredScore;
+  return {model,modelLabel:model==='new_launch'?'New launch':'Established',score,marketSentimentScore,sentimentBasis,minEntryScore:requiredScore,checks,safetyPassed,historyReady,observations:history.length+1,passed,signals,metrics:{buyRatio,volumeAcceleration:va,buyerAcceleration:ba,liquidityChangePct:lc,volumeTrend,buyerTrend,ageLimitHours:ageLimit},rejectionReasons:Object.entries(checks).filter(([,v])=>!v).map(([k])=>k).concat(!historyReady?['history']:[],score<cfg.minEntryScore?['entry_score']:[])};
 }
 
 
