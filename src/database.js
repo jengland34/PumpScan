@@ -25,7 +25,7 @@ export async function initialiseDatabase(){
     CREATE UNIQUE INDEX IF NOT EXISTS scan_runs_started_idx ON scan_runs(started_at);
     CREATE TABLE IF NOT EXISTS paper_trades(id TEXT PRIMARY KEY,address TEXT,symbol TEXT,type TEXT NOT NULL,occurred_at TIMESTAMPTZ NOT NULL,realised_pnl_gbp DOUBLE PRECISION,payload JSONB NOT NULL);
     CREATE INDEX IF NOT EXISTS paper_trades_occurred_idx ON paper_trades(occurred_at DESC);
-    CREATE TABLE IF NOT EXISTS risk_assessments(address TEXT NOT NULL,assessed_at TIMESTAMPTZ NOT NULL,score DOUBLE PRECISION,available BOOLEAN,payload JSONB NOT NULL,PRIMARY KEY(address,assessed_at));
+    CREATE TABLE IF NOT EXISTS risk_assessments(address TEXT NOT NULL,assessed_at TIMESTAMPTZ NOT NULL,score DOUBLE PRECISION,available BOOLEAN,payload JSONB NOT NULL,PRIMARY KEY(address,assessed_at));\n    CREATE TABLE IF NOT EXISTS v4_signals(id TEXT PRIMARY KEY,mint TEXT NOT NULL,model TEXT NOT NULL,status TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL,updated_at TIMESTAMPTZ NOT NULL,payload JSONB NOT NULL);\n    CREATE INDEX IF NOT EXISTS v4_signals_created_idx ON v4_signals(created_at DESC);
     CREATE INDEX IF NOT EXISTS risk_assessments_time_idx ON risk_assessments(assessed_at DESC);
   `);
   status={configured:true,connected:true,lastWriteAt:null,lastError:null};return pool;
@@ -82,4 +82,18 @@ export async function v4EventStats() {
   if (!pool) return {configured:false,count:0};
   const {rows}=await pool.query('SELECT count(*)::bigint AS count,max(received_at) AS last_event_at FROM raw_events');
   return {configured:true,count:Number(rows[0]?.count||0),lastEventAt:rows[0]?.last_event_at||null};
+}
+
+export async function persistV4Signal(signal) {
+  if (!pool) return false;
+  await pool.query(`INSERT INTO v4_signals(id,mint,model,status,created_at,updated_at,payload)
+    VALUES($1,$2,$3,$4,$5,$6,$7::jsonb)
+    ON CONFLICT(id) DO UPDATE SET status=EXCLUDED.status,updated_at=EXCLUDED.updated_at,payload=EXCLUDED.payload`,
+    [signal.id,signal.mint,signal.model,signal.status,signal.createdAt,signal.lastSeenAt,JSON.stringify(signal)]);
+  return true;
+}
+export async function v4SignalStats() {
+  if (!pool) return {configured:false,count:0,active:0};
+  const {rows}=await pool.query(`SELECT count(*)::bigint AS count,count(*) FILTER (WHERE status='active')::bigint AS active FROM v4_signals`);
+  return {configured:true,count:Number(rows[0]?.count||0),active:Number(rows[0]?.active||0)};
 }
