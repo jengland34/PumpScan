@@ -1,5 +1,5 @@
 const HORIZONS={'15m':900000,'1h':3600000,'6h':21600000,'24h':86400000};
-export const MAX_HISTORY_PER_TOKEN=480,MAX_TRACKED_TOKENS=150,TRACKED_REFRESH_PER_SCAN=20;
+export const MAX_HISTORY_PER_TOKEN=480,MAX_TRACKED_TOKENS=5000,TRACKED_REFRESH_PER_SCAN=20;
 export function createObservation(market,at=new Date().toISOString()){return{at,priceUsd:Number(market.priceUsd)||0,liquidityUsd:Number(market.liquidityUsd)||0,volume5mUsd:Number(market.volume5mUsd)||0,volume24hUsd:Number(market.volume24hUsd)||0,buys5m:Number(market.buys5m)||0,sells5m:Number(market.sells5m)||0,priceChange5m:Number(market.priceChange5m)||0,marketCapUsd:Number(market.marketCapUsd)||0};}
 export function appendObservation(history=[],market,at=new Date().toISOString(),limit=MAX_HISTORY_PER_TOKEN){const next=createObservation(market,at),rows=Array.isArray(history)?history:[],last=rows[rows.length-1];if(last?.at===at)return[...rows.slice(0,-1),next].slice(-limit);return[...rows,next].slice(-limit);}
 export function updateTokenTracker(existing,market,scored=null,at=new Date().toISOString()){
