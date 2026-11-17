@@ -14,7 +14,7 @@ export function calculateFeatures(buffer, mint, at = Date.now()) {
     tradeRateAcceleration:ratio((w10.trades||0)*6,w1.trades||0),
     buyerAcceleration:ratio((w1.uniqueBuyers||0)*5,w5.uniqueBuyers||0),
     volumeAcceleration:ratio((w1.buyUsd+w1.sellUsd)*5,w5.buyUsd+w5.sellUsd),
-    topBuyerShare5m:w5.topBuyerShare||0,top3BuyerShare1m:w1.top3BuyerShare||0,top3BuyerShare5m:w5.top3BuyerShare||0,repeatBuyerShare5m:w5.repeatBuyerShare||0,buyerBreadth1m:w1.buyerBreadth||0,buyerBreadth5m:w5.buyerBreadth||0,
+    topBuyerShare5m:w5.topBuyerShare||0,top3BuyerShare1m:w1.top3BuyerShare||0,top3BuyerShare5m:w5.top3BuyerShare||0,repeatBuyerShare5m:w5.repeatBuyerShare||0,buyerBreadth1m:w1.buyerBreadth||0,buyerBreadth5m:w5.buyerBreadth||0,sameSlotBuyShare5m:w5.sameSlotBuyShare||0,sameSlotBuyerCount5m:w5.sameSlotBuyerCount||0,
     latestPriceUsd:w10.latestPriceUsd||w1.latestPriceUsd||w5.latestPriceUsd||null,
     dataQuality:{events1m:w1.trades||0,events5m:w5.trades||0,hasRecentActivity:(w1.trades||0)>0}
   };
