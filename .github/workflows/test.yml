@@ -20,4 +20,5 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm install
+      - run: node --check src/server.js && node --check src/v4/runtime.js && node --check public/app.js
       - run: npm test
