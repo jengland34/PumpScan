@@ -35,6 +35,7 @@ async function api(req,res,url){
   for(const k of ['enabled','ignition','momentum'])if(x[k]!==undefined)cfg[k]=!!x[k];
   const limits={stakeGbp:[1,1000],maxOpenPositions:[1,20],minLiquidityUsd:[1000,10000000],maxRiskScore:[1,100],hardStopPct:[0.05,0.6],takeProfitMultiple:[1.1,20],trailingStopPct:[0.05,0.6],maxHoldMinutes:[5,1440],cooldownMinutes:[0,1440],dailyLossLimitGbp:[1,10000]};
   for(const [k,[min,max]] of Object.entries(limits))if(x[k]!==undefined){const n=Number(x[k]);if(!Number.isFinite(n)||n<min||n>max)return send(res,400,{error:k+' must be between '+min+' and '+max});cfg[k]=n;}
+  state.rules.stakeGbp=cfg.stakeGbp;state.rules.maxOpenPositions=cfg.maxOpenPositions;state.rules.dailyLossLimitGbp=cfg.dailyLossLimitGbp;
   await persist();return send(res,200,{ok:true,state:publicState()});
  }
  if(req.method==='POST'&&url.pathname==='/api/scanner/settings'){const x=await bodyJson(req);if(x.enabled!==undefined)state.scanner.enabled=!!x.enabled;if(x.autoPaper!==undefined)state.scanner.autoPaper=!!x.autoPaper;for(const [k,min,max] of [['minLiquidityUsd',1000,10000000],['minVolume5mUsd',100,10000000],['maxPairAgeHours',1,720],['maxRiskScore',1,100],['minEntryScore',1,100],['newLaunchMaxAgeHours',1,72]])if(x[k]!==undefined){const n=Number(x[k]);if(!Number.isFinite(n)||n<min||n>max)return send(res,400,{error:`Invalid ${k}`});state.scanner[k]=n}await persist();return send(res,200,{ok:true,state:publicState()})}
