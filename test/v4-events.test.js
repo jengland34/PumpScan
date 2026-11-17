@@ -31,9 +31,9 @@ test('deduplicates events and calculates rolling buyer and net-flow features',()
  assert.equal(f.netBuyUsd1m,130);assert.equal(f.uniqueBuyers1m,2);assert.equal(f.dataQuality.events1m,3);
 });
 test('detectors remain independent and fail closed when safety data is missing',()=>{
- const features={dataQuality:{events1m:8,events5m:20},netBuyUsd1m:200,netBuyUsd5m:500,uniqueBuyers1m:4,uniqueBuyers5m:8,buySellValueRatio5m:2,topBuyerShare5m:.1,buyerAcceleration:1.2,tradeRateAcceleration:1.2};
+ const features={dataQuality:{events1m:8,events5m:20},netBuyUsd1m:200,netBuyUsd5m:500,uniqueBuyers1m:4,uniqueBuyers5m:8,buySellValueRatio5m:2,topBuyerShare5m:.1,buyerAcceleration:1.2,tradeRateAcceleration:1.2,market:{priceChange5m:5}};
  assert.equal(detectIgnition(features).eligible,false);assert.equal(detectMomentum(features).eligible,false);
- const risk={available:true,passed:true,liquidityPassed:true};
+ const risk={available:true,passed:true,liquidityPassed:true,marketDataFresh:true};
  assert.equal(detectIgnition(features,risk).eligible,true);assert.equal(detectMomentum(features,risk).eligible,true);
 });
 
