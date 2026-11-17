@@ -51,13 +51,14 @@ export function scoreCandidate(market, report, history = [], config = {}) {
 }
 
 function includedTokenMap(included=[]){return new Map(included.filter(x=>x.type==='token').map(x=>[x.id,x.attributes||{}]));}
-async function discoverySources(){
+let discoveryCooldownUntil=0;
+async function discoverySources(){\n  if(Date.now()<discoveryCooldownUntil)throw new Error(`Discovery providers rate-limited; retry after ${Math.ceil((discoveryCooldownUntil-Date.now())/1000)} seconds.`);
   const settled=await Promise.allSettled([
     json(`${DEX}/token-profiles/latest/v1`),
     json(`${DEX}/token-boosts/latest/v1`),
     json(`${GT}/networks/solana/new_pools?include=base_token,quote_token,dex&page=1`)
   ]);
-  const [profiles,boosts,pools]=settled;
+  const [profiles,boosts,pools]=settled;\n  if(settled.some(x=>x.status==='rejected'&&Number(x.reason?.message?.match(/\\b429\\b/)?.[0])===429)){discoveryCooldownUntil=Date.now()+180000;}
   const rows=new Map();
   const add=(address,meta,source,poolCreatedAt=null)=>{
     if(!address)return;
