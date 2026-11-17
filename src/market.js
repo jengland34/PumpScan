@@ -1,3 +1,4 @@
+import { dexPaprikaFetch } from './dexpaprika.js';
 const BASE = 'https://api.dexscreener.com/tokens/v1/solana/';
 const CACHE_TTL_MS = 45_000;
 const MIN_REQUEST_INTERVAL_MS = 300;
@@ -5,12 +6,6 @@ const BASE_429_COOLDOWN_MS = 60_000;
 const MAX_429_COOLDOWN_MS = 15 * 60_000;
 const MAX_BATCH_SIZE = 30;
 const PAPRIKA_BASE = 'https://api.dexpaprika.com/networks/solana/tokens/';
-const PAPRIKA_BUDGET = 25;
-const PAPRIKA_WINDOW_MS = 5 * 60_000;
-let paprikaWindowStartedAt = Date.now();
-let paprikaRequestsInWindow = 0;
-let paprikaQueue = Promise.resolve();
-let lastPaprikaRequestAt = 0;
 const cache = new Map();
 const cooldowns = new Map();
 let requestQueue = Promise.resolve();
@@ -82,44 +77,33 @@ function normalizePair(address, p) {
 }
 
 async function fetchDexPaprika(address) {
-  if (Date.now() - paprikaWindowStartedAt >= PAPRIKA_WINDOW_MS) {
-    paprikaWindowStartedAt = Date.now();
-    paprikaRequestsInWindow = 0;
+  const response = await dexPaprikaFetch(PAPRIKA_BASE + encodeURIComponent(address));
+  if (!response.ok) {
+    let detail = '';
+    try { detail = (await response.text()).slice(0, 180); } catch {}
+    const retry = response.headers.get('retry-after');
+    throw new Error('DexPaprika token request failed (' + response.status + ')' + (retry ? '; Retry-After ' + retry + 's' : '') + (detail ? '; ' + detail : ''));
   }
-  if (paprikaRequestsInWindow >= PAPRIKA_BUDGET) throw new Error('DexPaprika fallback budget reached for this scan window');
-  paprikaRequestsInWindow += 1;
-  const task = paprikaQueue.then(async () => {
-    const wait = Math.max(0, 300 - (Date.now() - lastPaprikaRequestAt));
-    if (wait) await new Promise(resolve => setTimeout(resolve, wait));
-    lastPaprikaRequestAt = Date.now();
-    const response = await fetch(PAPRIKA_BASE + encodeURIComponent(address), {
-      headers: { accept: 'application/json', 'user-agent': 'PumpWatch/4.0' },
-      signal: AbortSignal.timeout(12_000)
-    });
-    if (!response.ok) throw new Error('DexPaprika token request failed (' + response.status + ')');
-    const body = await response.json();
-    const summary = body.summary || body.data?.summary || {};
-    const five = summary['5m'] || {};
-    const price = Number(summary.price_usd);
-    if (!(price > 0)) throw new Error('DexPaprika returned no current USD price');
-    const value = {
-      address, name: body.name || body.data?.name || 'Unknown token',
-      symbol: body.symbol || body.data?.symbol || 'TOKEN', priceUsd: price,
-      liquidityUsd: Number(summary.liquidity_usd || 0),
-      volume24hUsd: Number(summary['24h']?.volume_usd || summary['24h']?.volume || 0),
-      marketCapUsd: Number(summary.fdv || 0), pairAddress: null, dexId: 'DexPaprika', url: null,
-      priceChange24h: Number(summary['24h']?.last_price_usd_change || 0),
-      priceChange5m: Number(five.last_price_usd_change || 0),
-      volume5mUsd: Number(five.volume_usd || five.volume || 0),
-      buys5m: Number(five.buys || 0), sells5m: Number(five.sells || 0),
-      pairCreatedAt: null, fetchedAt: new Date().toISOString(), dataStatus: 'live',
-      dataAgeMs: 0, marketDataSource: 'DexPaprika fallback'
-    };
-    cache.set(address, { at: Date.now(), value });
-    return value;
-  });
-  paprikaQueue = task.catch(() => {});
-  return task;
+  const body = await response.json();
+  const summary = body.summary || body.data?.summary || {};
+  const five = summary['5m'] || {};
+  const price = Number(summary.price_usd);
+  if (!(price > 0)) throw new Error('DexPaprika returned no current USD price');
+  const value = {
+    address, name: body.name || body.data?.name || 'Unknown token',
+    symbol: body.symbol || body.data?.symbol || 'TOKEN', priceUsd: price,
+    liquidityUsd: Number(summary.liquidity_usd || 0),
+    volume24hUsd: Number(summary['24h']?.volume_usd || summary['24h']?.volume || 0),
+    marketCapUsd: Number(summary.fdv || 0), pairAddress: null, dexId: 'DexPaprika', url: null,
+    priceChange24h: Number(summary['24h']?.last_price_usd_change || 0),
+    priceChange5m: Number(five.last_price_usd_change || 0),
+    volume5mUsd: Number(five.volume_usd || five.volume || 0),
+    buys5m: Number(five.buys || 0), sells5m: Number(five.sells || 0),
+    pairCreatedAt: null, fetchedAt: new Date().toISOString(), dataStatus: 'live',
+    dataAgeMs: 0, marketDataSource: 'DexPaprika fallback'
+  };
+  cache.set(address, { at: Date.now(), value });
+  return value;
 }
 async function fetchBatch(addresses) {
   const url = BASE + addresses.map(encodeURIComponent).join(',');
