@@ -1,92 +1,54 @@
-# PumpWatch V3 — Early Entry Engine (paper trading only)
+# PumpWatch Intelligence V4 — Solana signal research (paper only)
 
-PumpWatch V3 is a phone-first Solana token discovery and **paper-trading** application. It preserves the V2 PWA, watchlist, JSON persistence, DexScreener discovery, RugCheck summaries and simulated position management, while adding two separate candidate-scoring models, persisted rolling market observations and progressive profit protection.
+PumpWatch V4 is a Solana-first signal intelligence platform. It is designed to detect two distinct opportunity types: early **Ignition** and confirmed **Momentum**. V4 is paper-only: it does not connect wallets, hold private keys, sign transactions or execute live trades.
 
-## Safety boundary
+## Architecture
 
-This application cannot execute real cryptocurrency trades. There is no wallet integration, private-key handling, Jupiter execution or live-trading mode. `autoPaper` creates simulated positions only. Do not add wallet seed phrases or private keys to this project.
+Bitquery Solana trade stream → canonical event normalisation → deduplication → rolling feature engine → independent Ignition and Momentum models → risk validation → signal lifecycle → forward paper outcomes.
 
-## V3 changes
+Sprint 1 implements the live event ingestion foundation and rolling features. Signal publication remains disabled until token security/liquidity enrichment, lifecycle handling and outcome measurement are implemented and tested.
 
-### Model A — New launches
+## Bitquery setup
 
-Pairs up to the configured `newLaunchMaxAgeHours` (default 24h) receive a score weighted toward buy-side pressure, buyer-transaction acceleration and early volume expansion. The pair age is based on the selected DexScreener pair, not necessarily the token's first-ever pool.
+Set `BITQUERY_ACCESS_TOKEN` in the hosting environment. The token is server-side only and must never be exposed to the browser or committed to Git. Without it, the stream stays disabled and status endpoints report the missing configuration.
 
-### Model B — Established pairs
+The live feed uses Bitquery's GraphQL WebSocket endpoint and the Solana `Trading.Trades` cube, filtered to Solana. See [Bitquery Solana API](https://docs.bitquery.io/docs/blockchain/Solana/) and [WebSocket subscription examples](https://docs.bitquery.io/docs/subscriptions/examples/).
 
-Older pairs (up to the configured maximum pair age) receive a score weighted more toward volume acceleration, controlled 5-minute price action and buyer activity.
+## V4 endpoints
 
-### Shared hard safety gates
+- `/api/v4/status` — feed, persistence and safety status.
+- `/api/v4/activity` — current activity feature snapshots.
+- `/api/v4/features?mint=<mint>` — rolling features for one mint.
+- `/api/health` — application health.
 
-- Positive, available price data.
-- Minimum liquidity (default $10,000).
-- Pair age within configured maximum (default 72h).
-- RugCheck report available with normalized score below configured maximum (default 35).
-- No RugCheck `danger` or `critical` risk level.
-- Minimum 5-minute activity floor (default $1,500 volume).
-- At least two prior observations before a candidate can pass for entry.
+## Persistence
 
-Unknown/unavailable security data is a fail, never a pass. Momentum cannot compensate for a failed safety gate. Scores are heuristics, not probabilities or evidence of profitability.
+PostgreSQL stores canonical raw events in `raw_events`, uniquely keyed by transaction signature and trade index. The runtime maintains bounded in-memory rolling windows for feature calculation. A durable event archive enables later replay and model evaluation.
 
-### Rolling observation history
+## Development
 
-Each discovery scan stores up to 12 observations per candidate in `data/state.json`. Current DexScreener 5-minute rolling volume and transaction counts are compared with earlier snapshots to estimate acceleration. These are overlapping rolling-window snapshots, not independent 1-minute candles or a full historical tick feed. History is warmed up over multiple scans; candidates are not eligible for entry until at least two prior observations exist.
-
-### Position management
-
-- Emergency hard stop remains 25% below entry by default.
-- Profit protection activates once the observed peak reaches 1.4x entry, using the configured trailing percentage (20% default).
-- At 2x, the system sells 50% of the original position fraction.
-- The remaining runner uses a 20% trail by default, widening to 22% after 3x and 25% after 5x to allow larger moves some room.
-- Maximum three open positions, £30 maximum stake per position and £30 daily realized-loss pause remain defaults.
-
-These are initial research parameters, not optimized settings. The wider runner tiers deliberately allow more giveback at higher multiples and must be evaluated in forward paper trading.
-
-## Important limitations
-
-- DexScreener's latest token-profile and latest-boost feeds are curated/enhanced/paid-promotion feeds, not a complete feed of every new Solana mint. A boost is not a quality signal.
-- No holder-count, wallet concentration, top-holder distribution or sellability simulation is currently included.
-- RugCheck summaries are not guarantees that a token is safe or sellable.
-- The scanner enriches candidates sequentially to reduce API rate-limit pressure; discovery may take time.
-- No historical OHLCV backtester is included yet. V3 collects rolling observations for forward evaluation; do not describe its score as historically validated.
-- Public API availability, freshness and rate limits can change.
-
-## Run locally
-
-Requires Node.js 20+.
+Node.js 22+.
 
 ```bash
-cp .env.example .env
-# Set APP_PASSWORD to a long unique password before exposing the app beyond localhost.
+npm install
 npm test
 npm start
 ```
 
-Open `http://localhost:3000`. For phone access on the same Wi-Fi, use the computer's LAN IP and port 3000. Do not expose an unauthenticated instance to the public internet.
+Configure `DATABASE_URL`, `BITQUERY_ACCESS_TOKEN` and a strong `APP_PASSWORD`. PostgreSQL is required for durable event history. Keep the application private while configuring credentials.
 
-## Deploy to Render
+## Delivery status
 
-1. Push this folder to a private GitHub repository.
-2. Create a Render Blueprint deployment from the repository; Render reads `render.yaml`.
-3. Use an always-on instance and persistent disk mounted at `/app/data`.
-4. Set/retain a unique `APP_PASSWORD`; keep it private.
-5. Open the HTTPS service on Android and add it to the home screen.
+- [x] V4 branch and event schema
+- [x] Bitquery GraphQL WebSocket adapter
+- [x] Canonical trade normalisation and deduplication
+- [x] Rolling 10s / 1m / 5m / 15m / 1h feature windows
+- [x] PostgreSQL raw event persistence
+- [x] Paper-only runtime and diagnostics endpoints
+- [x] Independent detector scaffolds with fail-closed risk gates
+- [ ] Provider integration verified with a live credential
+- [ ] Token/pool discovery and security/liquidity enrichment
+- [ ] Production-grade reconnect/backfill and durable feature replay
+- [ ] Signal lifecycle and forward outcome evaluation
 
-## Environment variables
-
-- `PORT` — defaults to 3000.
-- `APP_PASSWORD` — HTTP Basic Auth password; set it on any public host.
-- `POLL_INTERVAL_MS` — position price monitoring interval; minimum 10 seconds, default 15 seconds.
-- `GBP_USD` — estimated GBP/USD conversion for paper accounting; default 1.27, not a live FX feed.
-
-## Tests
-
-```bash
-npm test
-```
-
-The automated tests cover scanner scoring gates/model classification and exit behaviour. They do not establish a profitable trading edge.
-
-## Live execution intentionally out of scope
-
-Any future live execution phase would require a separate isolated signer, strict capital limits, transaction simulation, minimum-output checks, idempotency, on-chain balance reconciliation, hardened authentication, audit logs, emergency stop and extensive independent testing. Never store a wallet seed phrase in the browser, repository or ordinary `.env` file.
+Passing tests do not establish signal profitability.

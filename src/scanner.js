@@ -1,166 +1,176 @@
-import { getTokenMarket } from './market.js';
+import { dexPaprikaFetch } from './dexpaprika.js';
+import { getTokenMarkets } from './market.js';
 
 const DEX = 'https://api.dexscreener.com';
-const DEFAULT_SCAN_CONFIG = Object.freeze({
-  minLiquidityUsd: 10000,
-  minVolume5mUsd: 1500,
-  maxPairAgeHours: 72,
-  maxRiskScore: 35,
-  minEntryScore: 55,
-  newLaunchMaxAgeHours: 24
-});
+const GT = 'https://api.geckoterminal.com/api/v2';
+const DEFAULT_SCAN_CONFIG = Object.freeze({ minLiquidityUsd: 10000, minVolume5mUsd: 1500, maxPairAgeHours: 72, maxEstablishedAgeHours: 4320, maxRiskScore: 35, minEntryScore: 55, minEstablishedEntryScore: 60, newLaunchMaxAgeHours: 24 });
 
-async function json(url) {
-  const response = await fetch(url, {
-    headers: { accept: 'application/json' },
-    signal: AbortSignal.timeout(12000)
-  });
-  if (!response.ok) throw new Error(`Market provider returned ${response.status}`);
+async function json(url, timeout = 12000) {
+  const response = await fetch(url, { headers: { accept: 'application/json', 'user-agent': 'PumpWatch/3.2' }, signal: AbortSignal.timeout(timeout) });
+  if (!response.ok) throw new Error(`Provider returned ${response.status}`);
   return response.json();
 }
-
 async function rugcheck(mint) {
   try {
-    const response = await fetch(`https://api.rugcheck.xyz/v1/tokens/${encodeURIComponent(mint)}/report/summary`, {
-      headers: { accept: 'application/json' },
-      signal: AbortSignal.timeout(10000)
-    });
-    if (!response.ok) return { available: false, risks: [] };
-    const data = await response.json();
-    return {
-      available: true,
-      scoreNormalised: Number.isFinite(Number(data.score_normalised)) ? Number(data.score_normalised) : null,
-      score: Number(data.score),
-      lpLockedPct: data.lpLockedPct == null ? null : Number(data.lpLockedPct),
-      risks: Array.isArray(data.risks) ? data.risks.map(item => ({
-        name: item.name, level: item.level, description: item.description
-      })) : [],
-      mintAuthority: data.mintAuthority ?? null,
-      freezeAuthority: data.freezeAuthority ?? null
-    };
-  } catch {
-    return { available: false, risks: [] };
-  }
+    const data = await json(`https://api.rugcheck.xyz/v1/tokens/${encodeURIComponent(mint)}/report/summary`, 10000);
+    return { available: true, scoreNormalised: Number.isFinite(Number(data.score_normalised)) ? Number(data.score_normalised) : null, score: Number(data.score), lpLockedPct: data.lpLockedPct == null ? null : Number(data.lpLockedPct), risks: Array.isArray(data.risks) ? data.risks.map(x => ({ name:x.name, level:x.level, description:x.description })) : [], mintAuthority:data.mintAuthority??null, freezeAuthority:data.freezeAuthority??null };
+  } catch { return { available:false, risks:[] }; }
 }
+function ratio(a,b){return Number.isFinite(a)&&Number.isFinite(b)&&b>0?a/b:null;}
 
-function ratio(current, previous) {
-  if (!Number.isFinite(current) || !Number.isFinite(previous) || previous <= 0) return null;
-  return current / previous;
-}
-
-/** Pure scoring function, exported for deterministic tests. */
 export function scoreCandidate(market, report, history = [], config = {}) {
-  const cfg = { ...DEFAULT_SCAN_CONFIG, ...config };
-  const ageHours = market.pairAgeHours;
-  const isNewLaunch = ageHours !== null && ageHours <= cfg.newLaunchMaxAgeHours;
-  const model = isNewLaunch ? 'new_launch' : 'established';
-  const riskLevels = (report?.risks || []).map(item => String(item.level || '').toLowerCase());
-  const severeRisk = riskLevels.some(level => ['danger', 'critical'].includes(level));
-  const riskScore = Number.isFinite(report?.scoreNormalised) ? report.scoreNormalised : null;
-
-  // Safety checks are hard gates. Momentum cannot compensate for unsafe/unknown security.
-  const checks = {
-    price: Number.isFinite(market.priceUsd) && market.priceUsd > 0,
-    liquidity: market.liquidityUsd >= cfg.minLiquidityUsd,
-    security: report?.available === true && riskScore !== null && riskScore < cfg.maxRiskScore && !severeRisk,
-    age: ageHours !== null && ageHours >= 0 && ageHours <= cfg.maxPairAgeHours,
-    minimumActivity: market.volume5mUsd >= cfg.minVolume5mUsd
-  };
-
-  const previous = history.length ? history[history.length - 1] : null;
-  const volumeAcceleration = previous ? ratio(market.volume5mUsd, previous.volume5mUsd) : null;
-  const buyerAcceleration = previous ? ratio(market.buys5m, previous.buys5m) : null;
-  const liquidityChangePct = previous && previous.liquidityUsd > 0
-    ? ((market.liquidityUsd / previous.liquidityUsd) - 1) * 100 : null;
-  const buyRatio = market.buys5m + market.sells5m > 0
-    ? market.buys5m / (market.buys5m + market.sells5m) : 0;
-  const priceChange5m = Number(market.priceChange5m || 0);
-
-  const signals = {};
-  if (model === 'new_launch') {
-    // New launches: reward buyer growth and persistent buy-side pressure more heavily.
-    signals.buyPressure = buyRatio >= 0.70 ? 25 : buyRatio >= 0.60 ? 18 : buyRatio >= 0.52 ? 9 : 0;
-    signals.buyerAcceleration = buyerAcceleration === null ? 0 : buyerAcceleration >= 2 ? 25 : buyerAcceleration >= 1.35 ? 17 : buyerAcceleration >= 1.1 ? 8 : 0;
-    signals.volumeAcceleration = volumeAcceleration === null ? 0 : volumeAcceleration >= 2 ? 15 : volumeAcceleration >= 1.35 ? 10 : volumeAcceleration >= 1.1 ? 5 : 0;
-    signals.priceAction = priceChange5m >= 1 && priceChange5m <= 10 ? 10 : priceChange5m > 10 && priceChange5m <= 18 ? 5 : priceChange5m >= 0 && priceChange5m < 1 ? 4 : 0;
-    signals.liquidityStability = liquidityChangePct === null ? 5 : liquidityChangePct >= -2 ? 10 : liquidityChangePct >= -7 ? 4 : 0;
-    signals.activity = market.volume5mUsd >= cfg.minVolume5mUsd * 3 ? 5 : market.volume5mUsd >= cfg.minVolume5mUsd * 1.5 ? 4 : 2;
+  const cfg={...DEFAULT_SCAN_CONFIG,...config}, age=market.pairAgeHours;
+  const model=age!==null&&age<=cfg.newLaunchMaxAgeHours?'new_launch':'established';
+  const levels=(report?.risks||[]).map(x=>String(x.level||'').toLowerCase());
+  const risk=Number.isFinite(report?.scoreNormalised)?report.scoreNormalised:null;
+  const ageLimit=model==='new_launch'?cfg.newLaunchMaxAgeHours:cfg.maxEstablishedAgeHours;
+  const hasValue=v=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v));
+  const marketDataComplete=market.dataStatus!=='partial'&&['priceUsd','liquidityUsd','volume5mUsd','buys5m','sells5m','priceChange5m'].every(k=>hasValue(market[k]))&&(Number(market.buys5m)+Number(market.sells5m)>0);
+  const checks={price:Number.isFinite(market.priceUsd)&&market.priceUsd>0,liquidity:Number(market.liquidityUsd)>=cfg.minLiquidityUsd,security:report?.available===true&&risk!==null&&risk<cfg.maxRiskScore&&!levels.some(x=>['danger','critical'].includes(x)),age:age!==null&&age>=0&&age<=ageLimit&&(model!=='established'||age>cfg.newLaunchMaxAgeHours),marketData:marketDataComplete,minimumActivity:hasValue(market.volume5mUsd)&&Number(market.volume5mUsd)>=cfg.minVolume5mUsd};
+  const currentAt=Date.parse(market.fetchedAt||market.scannedAt||new Date().toISOString());
+  const recentHistory=history.slice(-2);
+  const historyComplete=recentHistory.length===2&&recentHistory.every((o,i)=>hasValue(o.volume5mUsd)&&hasValue(o.buys5m)&&hasValue(o.sells5m)&&hasValue(o.liquidityUsd)&&Number(o.buys5m)+Number(o.sells5m)>0&&Number.isFinite(Date.parse(o.at))&&(i===0||Date.parse(o.at)>Date.parse(recentHistory[i-1].at)))&&Number.isFinite(currentAt)&&currentAt>Date.parse(recentHistory[1].at)&&currentAt-Date.parse(recentHistory[1].at)<=15*60_000&&Date.parse(recentHistory[1].at)-Date.parse(recentHistory[0].at)<=15*60_000;
+  const prev=history.length?history[history.length-1]:null,prev2=history.length>1?history[history.length-2]:null;
+  const va=prev&&Number.isFinite(Number(market.volume5mUsd))?ratio(Number(market.volume5mUsd),Number(prev.volume5mUsd)):null, ba=prev&&Number.isFinite(Number(market.buys5m))?ratio(Number(market.buys5m),Number(prev.buys5m)):null;
+  const lc=prev&&prev.liquidityUsd>0?(market.liquidityUsd/prev.liquidityUsd-1)*100:null;
+  const buys=Number(market.buys5m),sells=Number(market.sells5m),hasFlow=Number.isFinite(buys)&&Number.isFinite(sells)&&buys+sells>0,buyRatio=hasFlow?buys/(buys+sells):0,pc=market.priceChange5m===null||market.priceChange5m===undefined||market.priceChange5m===''?NaN:Number(market.priceChange5m);
+  const volumeTrend=prev2&&prev&&Number(prev.volume5mUsd)>0&&Number(prev2.volume5mUsd)>0?Number(market.volume5mUsd)>=Number(prev.volume5mUsd)&&Number(prev.volume5mUsd)>=Number(prev2.volume5mUsd):null;
+  const buyerTrend=prev2&&prev&&Number(prev.buys5m)>=0&&Number(prev2.buys5m)>=0?Number(market.buys5m)>=Number(prev.buys5m)&&Number(prev.buys5m)>=Number(prev2.buys5m):null;
+  const signals={};
+  if(model==='new_launch'){
+    signals.buyPressure=!hasFlow?0:buyRatio>=.70?25:buyRatio>=.60?18:buyRatio>=.52?9:0;
+    signals.buyerAcceleration=ba===null?0:ba>=2?25:ba>=1.35?17:ba>=1.1?8:0;
+    signals.volumeAcceleration=va===null?0:va>=2?15:va>=1.35?10:va>=1.1?5:0;
+    signals.priceAction=Number.isFinite(pc)?(pc>=1&&pc<=10?10:pc>10&&pc<=18?5:pc>=0&&pc<1?4:0):0;
+    signals.liquidityStability=lc===null?0:lc>=-2?10:lc>=-7?4:0;
+    signals.activity=Number.isFinite(Number(market.volume5mUsd))? (market.volume5mUsd>=cfg.minVolume5mUsd*3?5:market.volume5mUsd>=cfg.minVolume5mUsd*1.5?4:market.volume5mUsd>=cfg.minVolume5mUsd?2:0):0;
+    signals.momentumConsistency=volumeTrend===true&&buyerTrend===true?10:volumeTrend===true||buyerTrend===true?5:0;
   } else {
-    // Established pairs: require stronger volume expansion and a controlled breakout profile.
-    signals.volumeAcceleration = volumeAcceleration === null ? 0 : volumeAcceleration >= 2 ? 25 : volumeAcceleration >= 1.35 ? 18 : volumeAcceleration >= 1.1 ? 8 : 0;
-    signals.buyPressure = buyRatio >= 0.70 ? 15 : buyRatio >= 0.60 ? 11 : buyRatio >= 0.52 ? 5 : 0;
-    signals.buyerAcceleration = buyerAcceleration === null ? 0 : buyerAcceleration >= 2 ? 15 : buyerAcceleration >= 1.35 ? 10 : buyerAcceleration >= 1.1 ? 5 : 0;
-    signals.priceAction = priceChange5m >= 1 && priceChange5m <= 8 ? 20 : priceChange5m > 8 && priceChange5m <= 15 ? 12 : priceChange5m >= 0 && priceChange5m < 1 ? 5 : 0;
-    signals.liquidityStability = liquidityChangePct === null ? 5 : liquidityChangePct >= -2 ? 10 : liquidityChangePct >= -7 ? 4 : 0;
-    signals.activity = market.volume5mUsd >= cfg.minVolume5mUsd * 3 ? 10 : market.volume5mUsd >= cfg.minVolume5mUsd * 1.5 ? 7 : 4;
+    signals.volumeAcceleration=va===null?0:va>=2?25:va>=1.35?18:va>=1.1?8:0;
+    signals.buyPressure=!hasFlow?0:buyRatio>=.70?15:buyRatio>=.60?11:buyRatio>=.52?5:0;
+    signals.buyerAcceleration=ba===null?0:ba>=2?15:ba>=1.35?10:ba>=1.1?5:0;
+    signals.priceAction=Number.isFinite(pc)?(pc>=1&&pc<=8?20:pc>8&&pc<=15?12:pc>=0&&pc<1?5:0):0;
+    signals.liquidityStability=lc===null?0:lc>=-2?10:lc>=-7?4:0;
+    signals.activity=Number.isFinite(Number(market.volume5mUsd))? (market.volume5mUsd>=cfg.minVolume5mUsd*3?10:market.volume5mUsd>=cfg.minVolume5mUsd*1.5?7:market.volume5mUsd>=cfg.minVolume5mUsd?4:0):0;
+    signals.momentumConsistency=volumeTrend===true&&buyerTrend===true?12:volumeTrend===true||buyerTrend===true?6:0;
   }
-
-  // Penalise chasing an already vertical move; do not reward a high 5m candle by itself.
-  signals.extensionPenalty = priceChange5m > 30 ? -25 : priceChange5m > 20 ? -12 : 0;
-  const score = Object.values(signals).reduce((sum, value) => sum + value, 0);
-
-  const safetyPassed = checks.price && checks.liquidity && checks.security && checks.age;
-  const historyReady = history.length >= 2;
-  const passed = safetyPassed && checks.minimumActivity && historyReady && score >= cfg.minEntryScore;
-  return {
-    model,
-    modelLabel: model === 'new_launch' ? 'New launch' : 'Established',
-    score,
-    minEntryScore: cfg.minEntryScore,
-    checks,
-    safetyPassed,
-    historyReady,
-    observations: history.length + 1,
-    passed,
-    signals,
-    metrics: { buyRatio, volumeAcceleration, buyerAcceleration, liquidityChangePct }
-  };
+  signals.extensionPenalty=Number.isFinite(pc)?(pc>30?-25:pc>20?-12:0):0;
+  const raw=Object.values(signals).reduce((s,n)=>s+n,0),score=Math.max(0,Math.min(100,raw));
+  const marketSentimentScore=Math.max(0,Math.min(100,Object.entries(signals).filter(([k])=>k!=='extensionPenalty').reduce((sum,[,v])=>sum+Math.max(0,v),0)));
+  const sentimentBasis=model==='new_launch'?'Buy pressure, buyer acceleration, volume acceleration, price action and liquidity stability':'Volume acceleration, buy pressure, buyer acceleration, price action and liquidity stability';
+  const safetyPassed=checks.price&&checks.liquidity&&checks.security&&checks.age,historyReady=marketDataComplete&&historyComplete;
+  const requiredScore=model==='new_launch'?cfg.minEntryScore:cfg.minEstablishedEntryScore;
+  const passed=safetyPassed&&checks.marketData&&checks.minimumActivity&&historyReady&&score>=requiredScore;
+  return {model,modelLabel:model==='new_launch'?'New launch':'Established',score,marketSentimentScore,sentimentBasis,minEntryScore:requiredScore,checks,safetyPassed,historyReady,observations:history.length+1,passed,signals,metrics:{buyRatio,volumeAcceleration:va,buyerAcceleration:ba,liquidityChangePct:lc,volumeTrend,buyerTrend,ageLimitHours:ageLimit},rejectionReasons:Object.entries(checks).filter(([,v])=>!v).map(([k])=>k).concat(!historyReady?['history']:[],score<requiredScore?['entry_score']:[])};
 }
 
-export async function discoverCandidates(limit = 24, config = {}, historyByAddress = {}) {
-  const [profiles, boosts] = await Promise.allSettled([
-    json(`${DEX}/token-profiles/latest/v1`),
-    json(`${DEX}/token-boosts/latest/v1`)
-  ]);
-  const items = [
-    ...(profiles.status === 'fulfilled' && Array.isArray(profiles.value) ? profiles.value : []),
-    ...(boosts.status === 'fulfilled' && Array.isArray(boosts.value) ? boosts.value : [])
-  ];
-  const seen = new Set();
-  const mints = items.filter(item => item.chainId === 'solana' && item.tokenAddress && !seen.has(item.tokenAddress) && seen.add(item.tokenAddress)).slice(0, limit);
-  const rows = [];
 
-  // Keep provider calls sequential to reduce the chance of rate limiting.
-  for (const item of mints) {
+function includedTokenMap(a=[]){return new Map(a.filter(x=>x.type==='token').map(x=>[x.id,x.attributes||{}]));}
+const cache=new Map(),blocked=new Map();let jupNext=0;
+const pause=ms=>new Promise(r=>setTimeout(r,ms));
+async function provider(key,url,ttl=300000,headers={},fetcher=fetch){const now=Date.now(),c=cache.get(key),until=blocked.get(key)||0;if(c&&now-c.at<ttl)return{status:'cached',value:c.value,error:null};if(now<until)return{status:c?'stale-cache':'cooldown',value:c?.value||null,error:'cooldown'};try{const r=await fetcher(url,{headers:{accept:'application/json','user-agent':'PumpWatch/3.3',...headers},signal:AbortSignal.timeout(12000)});if(!r.ok){if(r.status===429||r.status===403){const retry=Number(r.headers.get('retry-after'))*1000||0;blocked.set(key,now+Math.max(r.status===429?900000:1800000,retry));}throw Error('HTTP '+r.status);}const value=await r.json();cache.set(key,{at:now,value});blocked.delete(key);return{status:'live',value,error:null};}catch(e){return{status:c?'stale-cache':'rejected',value:c?.value||null,error:e.message};}}
+async function jupiterFeeds(){const out=[];for(const [n,u] of [['recent','https://api.jup.ag/tokens/v2/recent'],['trending','https://api.jup.ag/tokens/v2/toptrending/5m?limit=100'],['organic','https://api.jup.ag/tokens/v2/toporganicscore/5m?limit=100']]){await pause(Math.max(0,jupNext-Date.now()));jupNext=Date.now()+2200;out.push({name:n,...await provider('jup-'+n,u,900000,process.env.JUPITER_API_KEY?{'x-api-key':process.env.JUPITER_API_KEY}:{})});}return out;}
+function dexPaprikaPools(value){
+  if(Array.isArray(value))return value;
+  for(const key of ['results','data','pools','items'])if(Array.isArray(value?.[key]))return value[key];
+  return [];
+}
+function tokenFromPool(pool){
+  const tokens=Array.isArray(pool?.tokens)?pool.tokens:[pool?.base_token,pool?.token0,pool?.token].filter(Boolean);
+  // Pool search results are ordered base/quote in most responses. Prefer the
+  // explicit base token; never add both sides (which would flood the queue
+  // with SOL/USDC/USDT quote assets).
+  const t=pool?.base_token||pool?.token0||tokens[0]||null;
+  if(!t)return null;
+  const id=t.address||t.token_address||t.mint||(typeof t.id==='string'&&!t.id.includes('_')?t.id:null);
+  return id?{id,meta:t}:null;
+}
+async function discoverySources(){
+ const [profiles,boosts,pools,trendingPools,dexpaprika]=await Promise.all([
+   provider('dex-profile',DEX+'/token-profiles/latest/v1',900000),
+   provider('dex-boost',DEX+'/token-boosts/latest/v1',900000),
+   provider('gecko-new',GT+'/networks/solana/new_pools?include=base_token,quote_token,dex&page=1',600000),
+   provider('gecko-trending',GT+'/networks/solana/trending_pools?include=base_token,quote_token,dex&page=1',600000),
+   provider('dexpaprika-solana-new','https://api.dexpaprika.com/networks/solana/pools/search?order_by=created_at&sort=desc&limit=100&detailed=true',300000,{},dexPaprikaFetch)
+ ]);
+ const jup=process.env.JUPITER_API_KEY?await jupiterFeeds():[];
+ const rows=new Map();
+ const add=(id,m,src,created=null,pool=null)=>{if(!id||typeof id!=='string')return;const x=rows.get(id)||{tokenAddress:id,sources:[],symbol:m?.symbol,name:m?.name,poolCreatedAt:created};if(!x.sources.includes(src))x.sources.push(src);x.symbol=x.symbol||m?.symbol;x.name=x.name||m?.name;x.poolCreatedAt=x.poolCreatedAt||created;if(pool&&!x.geckoPool)x.geckoPool=pool;if(m?.organicScore!==undefined)x.jupiterOrganicScore=Number(m.organicScore);if(m?.isVerified!==undefined)x.jupiterVerified=!!m.isVerified;if(m?.audit)x.jupiterAudit=m.audit;rows.set(id,x);};
+ if(Array.isArray(profiles.value))for(const x of profiles.value)if(x.chainId==='solana')add(x.tokenAddress,x,'DexScreener profiles');
+ if(Array.isArray(boosts.value))for(const x of boosts.value)if(x.chainId==='solana')add(x.tokenAddress,x,'DexScreener boosts');
+ for(const [feed,label] of [[pools,'GeckoTerminal new pools'],[trendingPools,'GeckoTerminal trending pools']])if(feed.value)for(const p of feed.value.data||[]){const rel=p.relationships?.base_token?.data,b=includedTokenMap(feed.value.included).get(rel?.id),id=b?.address||rel?.id?.replace(/^solana_/,'');if(id)add(id,b||{},label,p.attributes?.pool_created_at||null,p.attributes||null);}
+ for(const p of dexPaprikaPools(dexpaprika.value)){const t=tokenFromPool(p);if(t)add(t.id,t.meta,'DexPaprika new pools',p.created_at||p.createdAt||p.created_at_utc||p.pool_created_at||p.attributes?.created_at||p.attributes?.pool_created_at||null);}
+ for(const f of jup)if(Array.isArray(f.value))for(const x of f.value)add(x.id,x,'Jupiter '+f.name);
+ // Pump.fun is a last-resort launch feed. Respect its provider cooldown and
+ // only call it when the other discovery feeds yielded no token addresses.
+ let pumpfun=null;
+ if(rows.size===0){
+   pumpfun=await provider('pumpfun-new','https://frontend-api-v3.pump.fun/coins?offset=0&limit=50&sort=created_timestamp&order=DESC&includeNsfw=false',900000);
+   const coins=Array.isArray(pumpfun.value)?pumpfun.value:(pumpfun.value?.coins||pumpfun.value?.data||[]);
+   for(const x of coins)if(x?.mint)add(x.mint,x,'Pump.fun new launches',x.created_timestamp?(Number(x.created_timestamp)<1e12?new Date(Number(x.created_timestamp)*1000).toISOString():new Date(Number(x.created_timestamp)).toISOString()):null);
+ }
+ const sourceStatus={profiles:{status:profiles.status,count:profiles.value?.length||0,error:profiles.error},boosts:{status:boosts.status,count:boosts.value?.length||0,error:boosts.error},newPools:{status:pools.status,count:pools.value?.data?.length||0,error:pools.error},trendingPools:{status:trendingPools.status,count:trendingPools.value?.data?.length||0,error:trendingPools.error},dexpaprika:{status:dexpaprika.status,count:dexPaprikaPools(dexpaprika.value).length,error:dexpaprika.error},jupiter:Object.fromEntries(jup.map(x=>[x.name,{status:x.status,count:x.value?.length||0,error:x.error}])),pumpfun:pumpfun?{status:pumpfun.status,count:(Array.isArray(pumpfun.value)?pumpfun.value.length:(pumpfun.value?.coins||pumpfun.value?.data||[]).length),error:pumpfun.error}:{status:'not-needed',count:0,error:null}};
+ return{rows:[...rows.values()],sourceStatus};
+}
+function geckoMarketFallback(item){
+ const p=item.geckoPool;if(!p)return null;
+ const n=v=>{const x=Number(v);return Number.isFinite(x)?x:0;};
+ const volume=p.volume_usd||{};
+ const price=n(p.base_token_price_usd),liquidity=n(p.reserve_in_usd);
+ if(!(price>0))return null;
+ return {address:item.tokenAddress,name:item.name||'Unknown token',symbol:item.symbol||'TOKEN',priceUsd:price,liquidityUsd:liquidity,volume24hUsd:n(volume.h24),marketCapUsd:0,pairAddress:p.address||null,dexId:p.dex_id||'GeckoTerminal',url:null,priceChange24h:null,priceChange5m:null,volume5mUsd:null,buys5m:null,sells5m:null,pairCreatedAt:p.pool_created_at?Date.parse(p.pool_created_at):null,dataStatus:'partial',marketDataSource:'GeckoTerminal cached discovery fallback (price/liquidity only; no 5m metrics)',fetchedAt:new Date().toISOString()};
+}
+async function mapLimit(items,concurrency,fn){const out=new Array(items.length);let next=0;await Promise.all(Array.from({length:Math.min(concurrency,items.length)},async()=>{while(true){const i=next++;if(i>=items.length)return;try{out[i]=await fn(items[i])}catch(e){out[i]={address:items[i].tokenAddress,symbol:items[i].symbol||'UNKNOWN',name:items[i].name||'Unknown token',source:items[i].sources.join(' + '),error:e.message,passed:false,safetyPassed:false,score:0,checks:{price:false,liquidity:false,security:false,age:false,minimumActivity:false},rejectionReasons:['market_data']};}}}));return out;}
+
+export async function refreshCandidates(items=[],config={},historyByAddress={}){
+ const selected=items.filter(x=>x?.tokenAddress||x?.address).map(x=>({tokenAddress:x.tokenAddress||x.address,symbol:x.symbol,name:x.name,sources:Array.isArray(x.sources)?x.sources:[x.source||'Previously discovered'],poolCreatedAt:x.poolCreatedAt||x.pairCreatedAt||null,geckoPool:x.geckoPool||null}));
+ const marketResults=await getTokenMarkets(selected.map(item=>item.tokenAddress));
+ const candidates=await mapLimit(selected,3,async item=>{
+  const [marketResult,report]=await Promise.all([Promise.resolve(marketResults.get(item.tokenAddress)||{error:new Error('Market data result missing')}),rugcheck(item.tokenAddress)]);
+  let market=marketResult.value;
+  if((!market||market.dataStatus==='stale'||market.dataStatus==='partial')&&item.geckoPool?.address){
     try {
-      const market = await getTokenMarket(item.tokenAddress);
-      const pairAgeHours = market.pairCreatedAt
-        ? Math.max(0, (Date.now() - market.pairCreatedAt) / 3600000)
-        : null;
-      const report = await rugcheck(item.tokenAddress);
-      const candidate = {
-        ...market,
-        pairAgeHours,
-        rugcheck: report,
-        source: items.some(entry => entry.tokenAddress === item.tokenAddress && entry.amount) ? 'Boosted/profile' : 'Profile',
-        scannedAt: new Date().toISOString()
-      };
-      const scored = scoreCandidate(candidate, report, historyByAddress[item.tokenAddress] || [], config);
-      rows.push({ ...candidate, ...scored });
-    } catch (error) {
-      rows.push({
-        address: item.tokenAddress,
-        symbol: item.symbol || 'UNKNOWN',
-        name: item.name || 'Unknown token',
-        error: error.message,
-        passed: false,
-        safetyPassed: false,
-        score: 0,
-        checks: { price: false, liquidity: false, security: false, age: false, minimumActivity: false }
-      });
-    }
+      const response=await json(GT+'/networks/solana/pools/'+encodeURIComponent(item.geckoPool.address)+'?include=base_token,quote_token,dex',10000);
+      const a=response.data?.attributes||response.attributes||{};
+      const volume=a.volume_usd||{},tx=a.transactions||{},change=a.price_change_percentage||{};
+      const price=Number(a.base_token_price_usd),liquidity=Number(a.reserve_in_usd);
+      if(price>0&&liquidity>=0){
+        const v5=volume.m5,buys=tx.m5?.buys,sells=tx.m5?.sells,change5=change.m5;
+        const complete=[v5,buys,sells,change5].every(v=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v)));
+        market={address:item.tokenAddress,name:item.name||'Unknown token',symbol:item.symbol||'TOKEN',priceUsd:price,liquidityUsd:liquidity,volume24hUsd:Number(volume.h24||0),marketCapUsd:0,pairAddress:item.geckoPool.address,dexId:a.dex_id||'GeckoTerminal',url:null,priceChange24h:Number(change.h24||0),priceChange5m:complete?Number(change5):null,volume5mUsd:complete?Number(v5):null,buys5m:complete?Number(buys):null,sells5m:complete?Number(sells):null,pairCreatedAt:a.pool_created_at?Date.parse(a.pool_created_at):null,fetchedAt:new Date().toISOString(),dataStatus:complete?'live':'partial',dataAgeMs:0,marketDataSource:complete?'GeckoTerminal fallback':'GeckoTerminal partial fallback'};
+      }
+    } catch {}
   }
+  if(!market||market.dataStatus==='stale')throw new Error('Market data unavailable or stale: '+(market?.dataError||marketResult.error?.message||'no fresh market snapshot'));
+  const feedCreatedAt=item.poolCreatedAt?Date.parse(item.poolCreatedAt):null;
+    const pairCreatedAt=Number.isFinite(feedCreatedAt)&&feedCreatedAt>0?feedCreatedAt:market.pairCreatedAt||null;
+  const pairAgeHours=pairCreatedAt?Math.max(0,(Date.now()-pairCreatedAt)/3600000):null;
+  const candidate={...market,address:item.tokenAddress,symbol:market.symbol||item.symbol||'UNKNOWN',name:market.name||item.name||'Unknown token',pairAgeHours,pairCreatedAt,rugcheck:report,source:item.sources.join(' + '),geckoPool:item.geckoPool||null,scannedAt:new Date().toISOString()};
+  return {...candidate,...scoreCandidate(candidate,report,historyByAddress[item.tokenAddress]||[],config)};
+ });
+ return candidates.map((c,i)=>({...c,rejectionReasons:c.rejectionReasons||['market_data'],source:selected[i]?.sources?.join(' + ')||'Previously discovered'}));
+}
 
-  rows.sort((a, b) => Number(b.passed) - Number(a.passed) || b.score - a.score || b.volume5mUsd - a.volume5mUsd);
-  return rows;
+function pearson(a,b){const n=Math.min(a.length,b.length);if(n<4)return null;const x=a.slice(-n),y=b.slice(-n),mx=x.reduce((s,v)=>s+v,0)/n,my=y.reduce((s,v)=>s+v,0)/n;let z=0,dx=0,dy=0;for(let i=0;i<n;i++){const u=x[i]-mx,v=y[i]-my;z+=u*v;dx+=u*u;dy+=v*v;}return dx&&dy?z/Math.sqrt(dx*dy):null;}export function addPeerCorrelation(cs,hs){const vs=new Map();for(const c of cs){const h=(hs[c.address]||[]).filter(x=>x.priceUsd>0).slice(-8),r=[];for(let i=1;i<h.length;i++)r.push(h[i].priceUsd/h[i-1].priceUsd-1);vs.set(c.address,r);}for(const c of cs){const peers=[];for(const o of cs){if(o.address===c.address)continue;const v=pearson(vs.get(c.address)||[],vs.get(o.address)||[]);if(v!==null&&v>=.65)peers.push({symbol:o.symbol,address:o.address,correlation:+v.toFixed(2),priceChange5m:+(o.priceChange5m||0)});}const up=peers.filter(p=>p.priceChange5m>0);c.localCorrelation={peerCount:peers.length,positivePeerCount:up.length,averagePeerPriceChange5m:up.length?+(up.reduce((n,p)=>n+p.priceChange5m,0)/up.length).toFixed(2):0,peers:peers.sort((a,b)=>b.correlation-a.correlation).slice(0,5),clusterMomentum:peers.length>=2&&up.length>=2?'positive cluster':peers.length>=2?'correlated cluster':'no clear cluster',rankBoost:Math.min(8,up.length*2)};}}
+export async function discoverCandidates(limit=60,config={},historyByAddress={},knownAddresses=new Set()){
+  const {rows,sourceStatus}=await discoverySources();
+  // Empty discovery is not a failed scan: the persistent universe must still be re-evaluated.
+  const selected=rows.filter(item=>!knownAddresses.has(item.tokenAddress)).slice(0,Math.max(limit,1));
+  const marketResults=await getTokenMarkets(selected.map(item=>item.tokenAddress));
+  const candidates=await mapLimit(selected,3,async item=>{
+    const [marketResult,report]=await Promise.all([Promise.resolve(marketResults.get(item.tokenAddress)||{error:new Error('Market data result missing')}),rugcheck(item.tokenAddress)]);
+    const market=marketResult.value||geckoMarketFallback(item);
+    if(!market||market.dataStatus==='stale')throw new Error('Market data unavailable or stale: '+(market?.dataError||marketResult.error?.message||'no fresh usable market snapshot'));
+    const feedCreatedAt=item.poolCreatedAt?Date.parse(item.poolCreatedAt):null;
+    const pairCreatedAt=Number.isFinite(feedCreatedAt)&&feedCreatedAt>0?feedCreatedAt:market.pairCreatedAt||null;
+    const pairAgeHours=pairCreatedAt?Math.max(0,(Date.now()-pairCreatedAt)/3600000):null;
+    const candidate={...market,address:item.tokenAddress,symbol:market.symbol||item.symbol||'UNKNOWN',name:market.name||item.name||'Unknown token',pairAgeHours,pairCreatedAt,rugcheck:report,source:item.sources.join(' + '),geckoPool:item.geckoPool||null,jupiterOrganicScore:item.jupiterOrganicScore??null,jupiterVerified:item.jupiterVerified??false,jupiterAudit:item.jupiterAudit??null,socialSentiment:item.socialSentiment??null,scannedAt:new Date().toISOString()};
+    const scored=scoreCandidate(candidate,report,historyByAddress[item.tokenAddress]||[],config);
+    return {...candidate,...scored};
+  });
+  for(const c of candidates){c.sourceStatus=sourceStatus;if(!c.rejectionReasons)c.rejectionReasons=['market_data'];}
+  addPeerCorrelation(candidates,historyByAddress);
+  candidates.sort((a,b)=>(a.model==='new_launch'?0:1)-(b.model==='new_launch'?0:1)||Number(b.passed)-Number(a.passed)||((b.score+(b.localCorrelation?.rankBoost||0)+(b.socialSentiment?.mentions>=3&&b.socialSentiment?.uniqueAuthors>=2&&b.socialSentiment?.score>0?Math.min(4,b.socialSentiment.mentions):0)+(b.jupiterOrganicScore>=60?2:0))-(a.score+(a.localCorrelation?.rankBoost||0)+(a.socialSentiment?.mentions>=3&&a.socialSentiment?.uniqueAuthors>=2&&a.socialSentiment?.score>0?Math.min(4,a.socialSentiment.mentions):0)+(a.jupiterOrganicScore>=60?2:0)))||(Number(b.volume5mUsd)||0)-(Number(a.volume5mUsd)||0));
+  candidates.sourceStatus=sourceStatus;
+  return candidates;
 }
