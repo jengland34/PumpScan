@@ -1,18 +1,26 @@
 export function normaliseShrineTrade(row, receivedAt = new Date().toISOString(), solUsd = null) {
-  const mint=row?.mint||row?.tokenMint||null, signature=row?.signature||row?.tx||null;
+  const mint=row?.mint||row?.tokenMint||row?.token_mint||null;
+  const signature=row?.signature||row?.tx||row?.transactionSignature||null;
   const index=row?.txIndex??row?.ixIndex??row?.innerIndex??0;
-  const side=String(row?.action||(row?.is_buy===true?'buy':row?.is_buy===false?'sell':'')).toLowerCase();
-  const trader=row?.trader||row?.wallet||row?.tradersInvolved?.[0]||row?.breakdown?.[0]?.trader||row?.txSigner||null;
-  const tokenAmount=Number(row?.tokenAmount??row?.token_amount??0), quoteAmount=Number(row?.quoteAmount??row?.quote_amount??0);
-  const quoteMint=row?.quoteMint||row?.quote_mint||row?.quote||null, rawPrice=Number(row?.price??0);
-  const explicitUsd=Number(row?.usdValue??row?.amountUsd??row?.volumeUsd??0), feedPriceUsd=Number(row?.priceUSD??row?.priceUsd??0);
-  const stable=['EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v','USD1'].includes(quoteMint);
-  const priceUsd=feedPriceUsd>0?feedPriceUsd:(rawPrice>0&&stable?rawPrice:(rawPrice>0&&quoteMint?.startsWith('So111')&&solUsd>0?rawPrice*solUsd:null));
-  const usd=explicitUsd>0?explicitUsd:(stable?quoteAmount:(quoteMint?.startsWith('So111')&&solUsd>0&&quoteAmount>0?quoteAmount*solUsd:(priceUsd>0&&tokenAmount>0?priceUsd*tokenAmount:0)));
+  const side=String(row?.action||(row?.is_buy===true?'buy':row?.is_buy===false?'sell':row?.side||'')).toLowerCase();
+  const trader=row?.trader||row?.wallet||row?.tradersInvolved?.[0]?.trader||row?.tradersInvolved?.[0]||row?.breakdown?.[0]?.trader||row?.txSigner||null;
+  const tokenAmount=Number(row?.tokenAmount??row?.token_amount??row?.baseAmount??row?.base_amount??0);
+  const quoteAmount=Number(row?.quoteAmount??row?.quote_amount??0);
+  const quoteMint=row?.quoteMint||row?.quote_mint||row?.quote||row?.quoteToken||row?.quoteTokenMint||null;
+  const rawPrice=Number(row?.price??0);
+  const explicitUsd=Number(row?.usdValue??row?.amountUsd??row?.volumeUsd??row?.volume_usd??row?.sol_amount_usd??0);
+  const feedPriceUsd=Number(row?.priceUSD??row?.priceUsd??row?.price_usd??0);
+  const stable=['EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v','USD1','Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'].includes(quoteMint);
+  const isSolQuote=String(quoteMint||'').startsWith('So111');
+  const solAmount=Number(row?.solAmount??row?.sol_amount??row?.amountSol??0);
+  const priceUsd=feedPriceUsd>0?feedPriceUsd:(rawPrice>0&&stable?rawPrice:(rawPrice>0&&isSolQuote&&solUsd>0?rawPrice*solUsd:null));
+  const usd=explicitUsd>0?explicitUsd:(solAmount>0&&solUsd>0?solAmount*solUsd:(stable&&quoteAmount>0?quoteAmount:(isSolQuote&&solUsd>0&&quoteAmount>0?quoteAmount*solUsd:(priceUsd>0&&tokenAmount>0?priceUsd*tokenAmount:0))));
   const timestamp=row?.timestamp??row?.time??receivedAt;
   const parsed=typeof timestamp==='number'?new Date(timestamp<1e10?timestamp*1000:timestamp):new Date(timestamp);
-  if(!mint||!signature||!['buy','sell'].includes(side)||!(usd>0)||!Number.isFinite(parsed.getTime()))return null;
-  return {id:`${signature}:${row?.pool||'pool'}:${index}`,chain:'solana',provider:'shrine',mint,symbol:row?.symbol||'UNKNOWN',tokenName:row?.name||null,pool:row?.pool||null,protocol:row?.protocol||null,side,trader,usd,priceUsd:priceUsd>0?priceUsd:null,baseAmount:tokenAmount,quoteAmount,signature,index:Number(index),occurredAt:parsed.toISOString(),receivedAt,slot:row?.block??null,txIndex:row?.txIndex??null};
+  // Shrine's documented trade payload may omit quote-mint and USD fields. Keep
+  // structurally valid trades; runtime enriches their USD notional from fresh market price.
+  if(!mint||!signature||!['buy','sell'].includes(side)||!(tokenAmount>0)||!Number.isFinite(parsed.getTime()))return null;
+  return {id:`${signature}:${row?.pool||'pool'}:${index}`,chain:'solana',provider:'shrine',mint,symbol:row?.symbol||'UNKNOWN',tokenName:row?.name||null,pool:row?.pool||null,protocol:row?.protocol||null,side,trader,usd:Number.isFinite(usd)&&usd>0?usd:0,priceUsd:priceUsd>0?priceUsd:null,baseAmount:tokenAmount,quoteAmount,signature,index:Number(index),occurredAt:parsed.toISOString(),receivedAt,slot:row?.block??null,txIndex:row?.txIndex??null,usdPending:!(usd>0)};
 }
 export function normaliseShrineLaunch(row,receivedAt=new Date().toISOString()){
  if(!row?.mint)return null;
