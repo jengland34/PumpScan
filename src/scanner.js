@@ -86,7 +86,9 @@ export async function discoverCandidates(limit=60,config={},historyByAddress={})
   if(!rows.length)throw new Error('Discovery providers returned no Solana tokens. Provider status: '+JSON.stringify(sourceStatus));
   const selected=rows.slice(0,Math.max(limit,1));
   const candidates=await mapLimit(selected,3,async item=>{
-    const [marketResult,report]=await Promise.all([getTokenMarket(item.tokenAddress).then(value=>({value})).catch(error=>({error})),rugcheck(item.tokenAddress)]);\n    const market=marketResult.value||geckoMarketFallback(item);\n    if(!market)throw new Error('Market data unavailable: '+(marketResult.error?.message||'no usable GeckoTerminal pool snapshot'));
+    const [marketResult,report]=await Promise.all([getTokenMarket(item.tokenAddress).then(value=>({value})).catch(error=>({error})),rugcheck(item.tokenAddress)]);
+    const market=marketResult.value||geckoMarketFallback(item);
+    if(!market)throw new Error('Market data unavailable: '+(marketResult.error?.message||'no usable GeckoTerminal pool snapshot'));
     const pairCreatedAt=market.pairCreatedAt||(item.poolCreatedAt?Date.parse(item.poolCreatedAt):null);
     const pairAgeHours=pairCreatedAt?Math.max(0,(Date.now()-pairCreatedAt)/3600000):null;
     const candidate={...market,address:item.tokenAddress,symbol:market.symbol||item.symbol||'UNKNOWN',name:market.name||item.name||'Unknown token',pairAgeHours,pairCreatedAt,rugcheck:report,source:item.sources.join(' + '),jupiterOrganicScore:item.jupiterOrganicScore??null,jupiterVerified:item.jupiterVerified??false,jupiterAudit:item.jupiterAudit??null,socialSentiment:item.socialSentiment??null,scannedAt:new Date().toISOString()};
