@@ -1,5 +1,8 @@
 const $=s=>document.querySelector(s);
-let state={},v4={},activity=[],launches=[],signals=[];
+const CACHE_KEY='pumpwatch:last-good-dashboard:v1';
+let cachedDashboard={};try{cachedDashboard=JSON.parse(localStorage.getItem(CACHE_KEY)||'{}')}catch{}
+let state=cachedDashboard.state||{},v4=cachedDashboard.v4||{},activity=cachedDashboard.activity||[],launches=cachedDashboard.launches||[],signals=cachedDashboard.signals||[];
+let usingCachedDashboard=!!cachedDashboard.savedAt;
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money=n=>'£'+Number(n||0).toFixed(2);
 const compact=n=>{n=Number(n||0);return n>=1e6?'$'+(n/1e6).toFixed(2)+'m':n>=1e3?'$'+(n/1e3).toFixed(1)+'k':'$'+n.toFixed(0)};
@@ -47,8 +50,21 @@ function renderV4(){
  $('#ignitionList').innerHTML=sigs('ignition');$('#momentumList').innerHTML=sigs('momentum');
 }
 async function refresh(){
- try{const [a,b,c,d,e]=await Promise.all([api('/api/state'),api('/api/v4/status'),api('/api/v4/activity'),api('/api/v4/launches'),api('/api/v4/signals')]);state=a;v4=b;activity=c.items||[];launches=d.items||[];signals=e.items||[];render();renderV4();}
- catch(e){$('#feed').textContent='API ERROR';$('#connection').textContent=e.message;console.error('PumpWatch refresh failed',e);}
+ const results=await Promise.allSettled([api('/api/state'),api('/api/v4/status'),api('/api/v4/activity'),api('/api/v4/launches'),api('/api/v4/signals')]);
+ const failures=[];
+ if(results[0].status==='fulfilled'){state=results[0].value;usingCachedDashboard=false;}else failures.push('Dashboard: '+results[0].reason.message);
+ if(results[1].status==='fulfilled')v4=results[1].value;else failures.push('Feed status: '+results[1].reason.message);
+ if(results[2].status==='fulfilled')activity=results[2].value.items||[];else failures.push('Activity: '+results[2].reason.message);
+ if(results[3].status==='fulfilled')launches=results[3].value.items||[];else failures.push('Launches: '+results[3].reason.message);
+ if(results[4].status==='fulfilled')signals=results[4].value.items||[];else failures.push('Signals: '+results[4].reason.message);
+ if(state&&Object.keys(state).length){
+  try{localStorage.setItem(CACHE_KEY,JSON.stringify({state,v4,activity,launches,signals,savedAt:new Date().toISOString()}));}catch(e){console.warn('Dashboard cache unavailable',e);}
+  render();
+ }
+ renderV4();
+ const cacheNote=usingCachedDashboard?'Showing last saved token snapshot while reconnecting. ':'';
+ if(failures.length){$('#connection').textContent=cacheNote+failures.join(' · ');$('#connection').title=failures.join('\n');}
+ else if(usingCachedDashboard){$('#connection').textContent='Showing saved snapshot';}
 }
 $('#nav').addEventListener('click',e=>{const b=e.target.closest('[data-view]');if(!b)return;document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id===b.dataset.view));});
 ['search','type','sort'].forEach(id=>$('#'+id).addEventListener('input',render));
