@@ -103,6 +103,25 @@ export async function v4SignalStats() {
 
 /** Read the durable, shared signal history. The database is the source of truth;
  * the in-memory runtime map is only a working cache for the single MVP engine. */
+export async function v4SignalPerformance() {
+ if(!pool)return [];
+ const {rows}=await pool.query(`
+  SELECT model,count(*)::int AS signals,
+   count(*) FILTER (WHERE payload->'forwardReturns' ? '1m')::int AS measured_1m,
+   count(*) FILTER (WHERE payload->'forwardReturns' ? '5m')::int AS measured_5m,
+   count(*) FILTER (WHERE payload->'forwardReturns' ? '15m')::int AS measured_15m,
+   count(*) FILTER (WHERE payload->'forwardReturns' ? '60m')::int AS measured_60m,
+   avg(NULLIF(payload->'forwardReturns'->'5m'->>'returnPct','')::float8) AS average_5m_pct,
+   count(*) FILTER (WHERE NULLIF(payload->'forwardReturns'->'5m'->>'returnPct','')::float8>0)::int AS wins_5m,
+   avg(NULLIF(payload->'forwardReturns'->'15m'->>'returnPct','')::float8) AS average_15m_pct,
+   count(*) FILTER (WHERE NULLIF(payload->'forwardReturns'->'15m'->>'returnPct','')::float8>0)::int AS wins_15m,
+   avg(NULLIF(payload->'forwardReturns'->'60m'->>'returnPct','')::float8) AS average_60m_pct,
+   count(*) FILTER (WHERE NULLIF(payload->'forwardReturns'->'60m'->>'returnPct','')::float8>0)::int AS wins_60m
+  FROM v4_signals GROUP BY model ORDER BY model
+ `);
+ return rows;
+}
+
 export async function loadV4Signals(limit=2000) {
   if (!pool) return [];
   const {rows}=await pool.query(
