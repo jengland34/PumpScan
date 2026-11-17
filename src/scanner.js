@@ -99,6 +99,20 @@ function geckoMarketFallback(item){
 }
 async function mapLimit(items,concurrency,fn){const out=new Array(items.length);let next=0;await Promise.all(Array.from({length:Math.min(concurrency,items.length)},async()=>{while(true){const i=next++;if(i>=items.length)return;try{out[i]=await fn(items[i])}catch(e){out[i]={address:items[i].tokenAddress,symbol:items[i].symbol||'UNKNOWN',name:items[i].name||'Unknown token',source:items[i].sources.join(' + '),error:e.message,passed:false,safetyPassed:false,score:0,checks:{price:false,liquidity:false,security:false,age:false,minimumActivity:false},rejectionReasons:['market_data']};}}}));return out;}
 
+export async function refreshCandidates(items=[],config={},historyByAddress={}){
+ const selected=items.filter(x=>x?.tokenAddress||x?.address).map(x=>({tokenAddress:x.tokenAddress||x.address,symbol:x.symbol,name:x.name,sources:Array.isArray(x.sources)?x.sources:[x.source||'Previously discovered'],poolCreatedAt:x.poolCreatedAt||x.pairCreatedAt||null}));
+ const candidates=await mapLimit(selected,3,async item=>{
+  const [marketResult,report]=await Promise.all([getTokenMarket(item.tokenAddress).then(value=>({value})).catch(error=>({error})),rugcheck(item.tokenAddress)]);
+  const market=marketResult.value;
+  if(!market)throw new Error('Market data unavailable: '+(marketResult.error?.message||'no market snapshot'));
+  const pairCreatedAt=market.pairCreatedAt||(item.poolCreatedAt?Date.parse(item.poolCreatedAt):null);
+  const pairAgeHours=pairCreatedAt?Math.max(0,(Date.now()-pairCreatedAt)/3600000):null;
+  const candidate={...market,address:item.tokenAddress,symbol:market.symbol||item.symbol||'UNKNOWN',name:market.name||item.name||'Unknown token',pairAgeHours,pairCreatedAt,rugcheck:report,source:item.sources.join(' + '),scannedAt:new Date().toISOString()};
+  return {...candidate,...scoreCandidate(candidate,report,historyByAddress[item.tokenAddress]||[],config)};
+ });
+ return candidates.map((c,i)=>({...c,rejectionReasons:c.rejectionReasons||['market_data'],source:selected[i]?.sources?.join(' + ')||'Previously discovered'}));
+}
+
 function pearson(a,b){const n=Math.min(a.length,b.length);if(n<4)return null;const x=a.slice(-n),y=b.slice(-n),mx=x.reduce((s,v)=>s+v,0)/n,my=y.reduce((s,v)=>s+v,0)/n;let z=0,dx=0,dy=0;for(let i=0;i<n;i++){const u=x[i]-mx,v=y[i]-my;z+=u*v;dx+=u*u;dy+=v*v;}return dx&&dy?z/Math.sqrt(dx*dy):null;}function addPeerCorrelation(cs,hs){const vs=new Map();for(const c of cs){const h=(hs[c.address]||[]).filter(x=>x.priceUsd>0).slice(-8),r=[];for(let i=1;i<h.length;i++)r.push(h[i].priceUsd/h[i-1].priceUsd-1);vs.set(c.address,r);}for(const c of cs){const peers=[];for(const o of cs){if(o.address===c.address)continue;const v=pearson(vs.get(c.address)||[],vs.get(o.address)||[]);if(v!==null&&v>=.65)peers.push({symbol:o.symbol,address:o.address,correlation:+v.toFixed(2),priceChange5m:+(o.priceChange5m||0)});}const up=peers.filter(p=>p.priceChange5m>0);c.localCorrelation={peerCount:peers.length,positivePeerCount:up.length,averagePeerPriceChange5m:up.length?+(up.reduce((n,p)=>n+p.priceChange5m,0)/up.length).toFixed(2):0,peers:peers.sort((a,b)=>b.correlation-a.correlation).slice(0,5),clusterMomentum:peers.length>=2&&up.length>=2?'positive cluster':peers.length>=2?'correlated cluster':'no clear cluster',rankBoost:Math.min(8,up.length*2)};}}
 export async function discoverCandidates(limit=60,config={},historyByAddress={}){
   const {rows,sourceStatus}=await discoverySources();
