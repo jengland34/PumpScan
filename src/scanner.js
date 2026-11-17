@@ -85,13 +85,15 @@ async function discoverySources(){
       else if(quoteAddress)add(quoteAddress,q||{},'GeckoTerminal new pool',created);
     }
   }
-  const sourceStatus={profiles:profiles.status,boosts:boosts.status,newPools:pools.status,profileCount:profiles.status==='fulfilled'?(profiles.value?.length||0):0,boostCount:boosts.status==='fulfilled'?(boosts.value?.length||0):0,poolCount:pools.status==='fulfilled'?(pools.value?.data?.length||0):0};\n  return {rows:[...rows.values()],sourceStatus};
+  const sourceStatus={profiles:profiles.status,boosts:boosts.status,newPools:pools.status,profileCount:profiles.status==='fulfilled'?(profiles.value?.length||0):0,boostCount:boosts.status==='fulfilled'?(boosts.value?.length||0):0,poolCount:pools.status==='fulfilled'?(pools.value?.data?.length||0):0};
+  return {rows:[...rows.values()],sourceStatus};
 }
 async function mapLimit(items,concurrency,fn){const out=new Array(items.length);let next=0;await Promise.all(Array.from({length:Math.min(concurrency,items.length)},async()=>{while(true){const i=next++;if(i>=items.length)return;try{out[i]=await fn(items[i])}catch(e){out[i]={address:items[i].tokenAddress,symbol:items[i].symbol||'UNKNOWN',name:items[i].name||'Unknown token',source:items[i].sources.join(' + '),error:e.message,passed:false,safetyPassed:false,score:0,checks:{price:false,liquidity:false,security:false,age:false,minimumActivity:false},rejectionReasons:['market_data']};}}}));return out;}
 
 export async function discoverCandidates(limit=15,config={},historyByAddress={}){
   const {rows,sourceStatus}=await discoverySources();
-  if(!rows.length)throw new Error(`Discovery providers returned no Solana tokens. Dex profiles: ${sourceStatus.profiles} (${sourceStatus.profileCount}), boosts: ${sourceStatus.boosts} (${sourceStatus.boostCount}), Gecko pools: ${sourceStatus.newPools} (${sourceStatus.poolCount}).`);\n  const selected=rows.slice(0,Math.max(limit,1));
+  if(!rows.length)throw new Error(`Discovery providers returned no Solana tokens. Dex profiles: ${sourceStatus.profiles} (${sourceStatus.profileCount}), boosts: ${sourceStatus.boosts} (${sourceStatus.boostCount}), Gecko pools: ${sourceStatus.newPools} (${sourceStatus.poolCount}).`);
+  const selected=rows.slice(0,Math.max(limit,1));
   const candidates=await mapLimit(selected,6,async item=>{
     const [market,report]=await Promise.all([getTokenMarket(item.tokenAddress),rugcheck(item.tokenAddress)]);
     const pairCreatedAt=market.pairCreatedAt||(item.poolCreatedAt?Date.parse(item.poolCreatedAt):null);
@@ -102,5 +104,6 @@ export async function discoverCandidates(limit=15,config={},historyByAddress={})
   });
   for(const c of candidates){c.sourceStatus=sourceStatus;if(!c.rejectionReasons)c.rejectionReasons=['market_data'];}
   candidates.sort((a,b)=>Number(b.passed)-Number(a.passed)||b.score-a.score||(Number(b.volume5mUsd)||0)-(Number(a.volume5mUsd)||0));
-  candidates.sourceStatus=sourceStatus;\n  return candidates;
+  candidates.sourceStatus=sourceStatus;
+  return candidates;
 }
