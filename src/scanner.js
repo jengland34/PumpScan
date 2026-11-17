@@ -66,17 +66,28 @@ async function discoverySources(){
  if(Array.isArray(boosts.value))for(const x of boosts.value)if(x.chainId==='solana')add(x.tokenAddress,x,'DexScreener boosts');
  if(pools.value)for(const p of pools.value.data||[]){const rel=p.relationships?.base_token?.data,b=includedTokenMap(pools.value.included).get(rel?.id),id=b?.address||rel?.id?.replace(/^solana_/,'');if(id)add(id,b||{},'GeckoTerminal pools',p.attributes?.pool_created_at||null,p.attributes||null);}
  for(const f of jup)if(Array.isArray(f.value))for(const x of f.value)add(x.id,x,'Jupiter '+f.name);
- // Last-resort discovery: Pump.fun's public new-coin feed is a separate host.
- // Only call it when the primary feeds produced no candidates, to avoid extra load.
- let pumpfun=null;
+ // Independent discovery fallbacks. These feeds are only used when the
+ // primary DexScreener/GeckoTerminal/Jupiter sources return no candidates.
+ let pumpfun=null,dexpaprika=null;
  if(rows.size===0){
    pumpfun=await provider('pumpfun-new','https://frontend-api-v3.pump.fun/coins?offset=0&limit=50&sort=created_timestamp&order=DESC&includeNsfw=false',300000);
    const coins=Array.isArray(pumpfun.value)?pumpfun.value:(pumpfun.value?.coins||pumpfun.value?.data||[]);
    for(const x of coins)if(x?.mint)add(x.mint,x,'Pump.fun new launches',x.created_timestamp?(Number(x.created_timestamp)<1e12?new Date(Number(x.created_timestamp)*1000).toISOString():new Date(Number(x.created_timestamp)).toISOString()):null);
  }
+ if(rows.size===0){
+   dexpaprika=await provider('dexpaprika-solana-new','https://api.dexpaprika.com/networks/solana/pools/search?order_by=created_at&sort=desc&limit=50&detailed=true',300000);
+   const pools=dexpaprika.value?.results||dexpaprika.value?.data||[];
+   for(const p of pools){
+     const tokens=Array.isArray(p.tokens)?p.tokens:[p.base_token,p.token0,p.token].filter(Boolean);
+     for(const t of tokens){
+       const id=t?.address||t?.token_address||t?.id||t?.mint;
+       if(id)add(id,{symbol:t.symbol,name:t.name},'DexPaprika new pools',p.created_at||p.createdAt||null);
+     }
+   }
+ }
  const red={items:[],status:'disabled',checkedAt:new Date().toISOString()};
  for(const x of rows.values()){const sym=String(x.symbol||'').trim().replace(/[^a-z0-9]/gi,''),name=String(x.name||'').trim();if(sym.length<3)continue;const hits=red.items.filter(y=>{const t=y.text;return new RegExp('(^|[^a-z0-9])'+sym+'([^a-z0-9]|$)','i').test(t)||(name.length>4&&t.toLowerCase().includes(name.toLowerCase()));}),ss=hits.map(y=>sentiment(y.text));x.socialSentiment={provider:'Reddit RSS',status:red.status,mentions:hits.length,uniqueAuthors:new Set(hits.map(y=>y.author).filter(Boolean)).size,score:ss.length?Math.round(ss.reduce((a,z)=>a+z.score,0)/ss.length):0,positive:ss.reduce((a,z)=>a+z.p,0),negative:ss.reduce((a,z)=>a+z.n,0),checkedAt:red.checkedAt};}
- return{rows:[...rows.values()],sourceStatus:{profiles:{status:profiles.status,count:profiles.value?.length||0,error:profiles.error},boosts:{status:boosts.status,count:boosts.value?.length||0,error:boosts.error},newPools:{status:pools.status,count:pools.value?.data?.length||0,error:pools.error},jupiter:Object.fromEntries(jup.map(x=>[x.name,{status:x.status,count:x.value?.length||0,error:x.error}])),pumpfun:pumpfun?{status:pumpfun.status,count:(Array.isArray(pumpfun.value)?pumpfun.value.length:(pumpfun.value?.coins||pumpfun.value?.data||[]).length),error:pumpfun.error}:{status:'not-needed',count:0,error:null}}};
+ return{rows:[...rows.values()],sourceStatus:{profiles:{status:profiles.status,count:profiles.value?.length||0,error:profiles.error},boosts:{status:boosts.status,count:boosts.value?.length||0,error:boosts.error},newPools:{status:pools.status,count:pools.value?.data?.length||0,error:pools.error},jupiter:Object.fromEntries(jup.map(x=>[x.name,{status:x.status,count:x.value?.length||0,error:x.error}])),pumpfun:pumpfun?{status:pumpfun.status,count:(Array.isArray(pumpfun.value)?pumpfun.value.length:(pumpfun.value?.coins||pumpfun.value?.data||[]).length),error:pumpfun.error}:{status:'not-needed',count:0,error:null},dexpaprika:dexpaprika?{status:dexpaprika.status,count:(dexpaprika.value?.results||dexpaprika.value?.data||[]).length,error:dexpaprika.error}:{status:'not-needed',count:0,error:null}}};
 }
 function geckoMarketFallback(item){
  const p=item.geckoPool;if(!p)return null;
