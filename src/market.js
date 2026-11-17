@@ -8,6 +8,8 @@ const cooldowns = new Map();
 const failures = new Map();
 let requestQueue = Promise.resolve();
 let lastRequestAt = 0;
+let globalCooldownUntil = 0;
+let global429Failures = 0;
 const inFlight = new Map();
 
 function retryAfterMs(response) {
@@ -43,10 +45,10 @@ async function fetchMarket(address) {
   if (!response.ok) {
     const status = response.status;
     if (status === 429 || status === 403) {
-      const count = (failures.get(address) || 0) + 1;
-      failures.set(address, count);
-      const exponential = Math.min(MAX_429_COOLDOWN_MS, BASE_429_COOLDOWN_MS * (2 ** Math.min(count - 1, 4)));
-      cooldowns.set(address, Date.now() + Math.max(exponential, retryAfterMs(response)));
+      global429Failures += 1;
+      const exponential = Math.min(MAX_429_COOLDOWN_MS, BASE_429_COOLDOWN_MS * (2 ** Math.min(global429Failures - 1, 4)));
+      globalCooldownUntil = Date.now() + Math.max(exponential, retryAfterMs(response));
+      cooldowns.set(address, globalCooldownUntil);
     }
     throw new Error(`Market data request failed (${status})`);
   }
@@ -79,6 +81,8 @@ async function fetchMarket(address) {
   cache.set(address, { at: Date.now(), value });
   cooldowns.delete(address);
   failures.delete(address);
+  global429Failures = 0;
+  globalCooldownUntil = 0;
   return value;
 }
 
@@ -88,7 +92,7 @@ export async function getTokenMarket(address) {
   if (cached && now - cached.at <= CACHE_TTL_MS) {
     return { ...cached.value, dataStatus: 'cached', dataAgeMs: now - cached.at };
   }
-  const until = cooldowns.get(address) || 0;
+  const until = Math.max(cooldowns.get(address) || 0, globalCooldownUntil);
   if (now < until) {
     const reason = `DexScreener cooldown (${Math.ceil((until - now) / 1000)}s remaining)`;
     const stale = staleSnapshot(address, cached, reason);
