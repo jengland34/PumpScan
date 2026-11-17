@@ -8,6 +8,7 @@ import { initialiseDatabase, loadDatabaseState, saveDatabaseState, databaseStatu
 import { getTokenMarket, getTokenMarkets, MARKET_FRESHNESS_LIMIT_MS } from './market.js';
 import { evaluatePosition } from './strategy.js';
 import { addPeerCorrelation, discoverCandidates, refreshCandidates } from './scanner.js';
+import { selectFairRefreshBatch } from './rotation.js';
 import { appendObservation, MAX_HISTORY_PER_TOKEN, MAX_TRACKED_TOKENS, TRACKED_REFRESH_PER_SCAN, telemetrySummary, trimTracking, updateTokenTracker } from './telemetry.js';
 const __dirname=path.dirname(fileURLToPath(import.meta.url));const PUBLIC_DIR=path.resolve(__dirname,'../public');const PORT=Number(process.env.PORT||3000);const GBP_USD=Number(process.env.GBP_USD||1.27);const POLL_MS=Math.max(10000,Number(process.env.POLL_INTERVAL_MS||15000));const APP_PASSWORD=process.env.APP_PASSWORD||'';
 let state=loadState();
@@ -38,24 +39,15 @@ async function discoveryScan(){if(discoveryBusy)return;discoveryBusy=true;try{
  const cfg=state.scanner,at=new Date().toISOString();state.tokenUniverse||={};state.candidatePool||={};
  const fresh=await discoverCandidates(60,cfg,state.marketHistory||{},new Set(Object.keys(state.tokenUniverse))),freshIds=new Set();
  for(const c of fresh){if(!c.address)continue;freshIds.add(c.address);const old=state.tokenUniverse[c.address]||{address:c.address,firstDiscoveredAt:at,observations:0};state.tokenUniverse[c.address]={...old,address:c.address,symbol:c.symbol||old.symbol,name:c.name||old.name,source:c.source||old.source,lastDiscoveredAt:at,lastAttemptAt:at,discoveryCount:(old.discoveryCount||0)+1};const previous=state.candidatePool[c.address];if(c.error){state.candidatePool[c.address]=previous?{...previous,refreshStatus:'stale',refreshError:c.error,lastRefreshAttemptAt:at}:{...c,score:0,marketSentimentScore:0,refreshStatus:'unavailable',refreshError:c.error,lastRefreshAttemptAt:at};}else{const partial=c.dataStatus==='partial';state.candidatePool[c.address]={...c,refreshStatus:partial?'partial':'fresh',refreshError:partial?'Provider supplied price/liquidity but not complete 5m trading metrics':null,lastRefreshAttemptAt:at,lastSuccessfulEvaluationAt:partial?null:at};if(!partial){state.tokenUniverse[c.address].lastEvaluatedAt=at;recordObservation(c,c,at);}}}
- // Fair refresh rotation across the entire persistent candidate pool.
- // Oldest/never-evaluated candidates go first; score rank cannot monopolise the batch.
- const pool=Object.values(state.candidatePool).filter(c=>c.address&&!freshIds.has(c.address));
- pool.sort((a,b)=>{
-   const ta=Date.parse(a.lastRefreshAttemptAt||a.lastAttemptAt||a.lastDiscoveredAt||0)||0;
-   const tb=Date.parse(b.lastRefreshAttemptAt||b.lastAttemptAt||b.lastDiscoveredAt||0)||0;
-   return ta-tb;
- });
- const cursor=Number(state.refreshCursor||0),startIndex=pool.length?cursor%pool.length:0;
- const rotated=pool.length?[...pool.slice(startIndex),...pool.slice(0,startIndex)]:[];
- const batch=rotated.slice(0,20);
- if(pool.length)state.refreshCursor=(startIndex+batch.length)%pool.length;
+ // Fair oldest-attempt rotation across the entire persistent candidate pool.
+ // Every success or failure updates lastRefreshAttemptAt, moving it behind untouched tokens.
+ const {batch,eligibleCount}=selectFairRefreshBatch(Object.values(state.candidatePool),freshIds,20);
  const refreshed=await refreshCandidates(batch,cfg,state.marketHistory||{});for(const c of refreshed){if(!c.address)continue;const previous=state.candidatePool[c.address];if(c.error){state.candidatePool[c.address]=previous?{...previous,refreshStatus:'stale',refreshError:c.error,lastRefreshAttemptAt:at}:{...c,score:0,marketSentimentScore:0,refreshStatus:'unavailable',refreshError:c.error,lastRefreshAttemptAt:at};state.tokenUniverse[c.address]={...(state.tokenUniverse[c.address]||{}),address:c.address,lastAttemptAt:at};continue;}const partial=c.dataStatus==='partial';state.candidatePool[c.address]={...c,refreshStatus:partial?'partial':'fresh',refreshError:partial?'Provider supplied price/liquidity but not complete 5m trading metrics':null,lastRefreshAttemptAt:at,lastSuccessfulEvaluationAt:partial?(previous?.lastSuccessfulEvaluationAt||null):at};state.tokenUniverse[c.address]={...(state.tokenUniverse[c.address]||{}),address:c.address,symbol:c.symbol,name:c.name,lastAttemptAt:at,...(!partial?{lastEvaluatedAt:at}:{})};if(!partial)recordObservation(c,c,at);}
  // Maintain historical tracking separately from the live leaderboard.
  await refreshTrackedMarkets(new Set([...freshIds,...refreshed.map(c=>c.address)]));
  const all=Object.values(state.candidatePool);const staleCandidateCount=all.filter(c=>c.refreshStatus==='stale'||c.dataStatus==='stale').length;const partialCandidateCount=all.filter(c=>c.refreshStatus==='partial'||c.dataStatus==='partial').length;const unavailableCandidateCount=all.filter(c=>c.refreshStatus==='unavailable').length;const leaderboard=all.filter(c=>c.refreshStatus==='fresh'&&c.dataStatus!=='stale'&&!c.error&&(c.lastSuccessfulEvaluationAt||c.scannedAt));leaderboard.sort((a,b)=>Number(b.score||0)-Number(a.score||0)||(Number(b.volume5mUsd)||0)-(Number(a.volume5mUsd)||0));state.candidates=leaderboard.slice(0,50);addPeerCorrelation(state.candidates,state.marketHistory||{});
  const reasons={};for(const c of state.candidates)for(const x of c.rejectionReasons||[])reasons[x]=(reasons[x]||0)+1;
- state.discoveryDiagnostics={lastAttemptAt:at,lastSuccessAt:at,lastError:null,newDiscoveries:fresh.length,universeCount:Object.keys(state.tokenUniverse).length,evaluatedCount:fresh.length+refreshed.length,candidateCount:state.candidates.length,staleCandidateCount,partialCandidateCount,unavailableCandidateCount,passedCount:state.candidates.filter(x=>x.passed).length,rejectionSummary:reasons,providers:fresh.sourceStatus||{}};
+ state.discoveryDiagnostics={lastAttemptAt:at,lastSuccessAt:at,lastError:null,newDiscoveries:fresh.length,universeCount:Object.keys(state.tokenUniverse).length,evaluatedCount:fresh.length+refreshed.length,refreshEligibleCount:eligibleCount,candidateCount:state.candidates.length,staleCandidateCount,partialCandidateCount,unavailableCandidateCount,passedCount:state.candidates.filter(x=>x.passed).length,rejectionSummary:reasons,providers:fresh.sourceStatus||{}};
  lastDiscoveryAt=at;lastDiscoveryError=null;addEvent('Scanner completed: '+fresh.length+' new-feed candidates; '+refreshed.length+' existing tokens re-evaluated; universe '+Object.keys(state.tokenUniverse).length+'; fresh leaderboard '+state.candidates.length+'; stale excluded '+staleCandidateCount+'; partial excluded '+partialCandidateCount+'; top 50 cap.');
  if(cfg.enabled&&cfg.autoPaper){for(const c of state.candidates.filter(x=>x.passed&&x.historyReady&&x.safetyPassed&&x.refreshStatus==='fresh'&&Date.now()-Date.parse(x.lastSuccessfulEvaluationAt||0)<=MARKET_FRESHNESS_LIMIT_MS).slice(0,3)){if(state.positions.filter(p=>p.remainingFraction>0).length>=state.rules.maxOpenPositions)break;if(state.positions.some(p=>p.address===c.address)||state.trades.some(t=>t.type==='paper_buy'&&t.address===c.address))continue;try{paperBuy(c.address,c,state.rules.stakeGbp,'Automatic '+(c.modelLabel||'scanner')+' paper entry; score '+c.score);marketCache[c.address]=c}catch(e){addEvent('Skipped '+c.symbol+': '+e.message,'warning')}}}
  await persist();
