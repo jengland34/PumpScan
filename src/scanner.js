@@ -74,7 +74,7 @@ function tokenFromPool(pool){
   // Pool search results are ordered base/quote in most responses. Prefer the
   // explicit base token; never add both sides (which would flood the queue
   // with SOL/USDC/USDT quote assets).
-  const t=pool?.base_token||tokens[0]||null;
+  const t=pool?.base_token||pool?.token0||tokens[0]||null;
   if(!t)return null;
   const id=t.address||t.token_address||t.mint||(typeof t.id==='string'&&!t.id.includes('_')?t.id:null);
   return id?{id,meta:t}:null;
@@ -93,7 +93,7 @@ async function discoverySources(){
  if(Array.isArray(profiles.value))for(const x of profiles.value)if(x.chainId==='solana')add(x.tokenAddress,x,'DexScreener profiles');
  if(Array.isArray(boosts.value))for(const x of boosts.value)if(x.chainId==='solana')add(x.tokenAddress,x,'DexScreener boosts');
  for(const [feed,label] of [[pools,'GeckoTerminal new pools'],[trendingPools,'GeckoTerminal trending pools']])if(feed.value)for(const p of feed.value.data||[]){const rel=p.relationships?.base_token?.data,b=includedTokenMap(feed.value.included).get(rel?.id),id=b?.address||rel?.id?.replace(/^solana_/,'');if(id)add(id,b||{},label,p.attributes?.pool_created_at||null,p.attributes||null);}
- for(const p of dexPaprikaPools(dexpaprika.value)){const t=tokenFromPool(p);if(t)add(t.id,t.meta,'DexPaprika new pools',p.created_at||p.createdAt||p.created_at_utc||null);}
+ for(const p of dexPaprikaPools(dexpaprika.value)){const t=tokenFromPool(p);if(t)add(t.id,t.meta,'DexPaprika new pools',p.created_at||p.createdAt||p.created_at_utc||p.pool_created_at||p.attributes?.created_at||p.attributes?.pool_created_at||null);}
  for(const f of jup)if(Array.isArray(f.value))for(const x of f.value)add(x.id,x,'Jupiter '+f.name);
  // Pump.fun is a last-resort launch feed. Respect its provider cooldown and
  // only call it when the other discovery feeds yielded no token addresses.
@@ -122,7 +122,8 @@ export async function refreshCandidates(items=[],config={},historyByAddress={}){
   const [marketResult,report]=await Promise.all([getTokenMarket(item.tokenAddress).then(value=>({value})).catch(error=>({error})),rugcheck(item.tokenAddress)]);
   const market=marketResult.value;
   if(!market)throw new Error('Market data unavailable: '+(marketResult.error?.message||'no market snapshot'));
-  const pairCreatedAt=market.pairCreatedAt||(item.poolCreatedAt?Date.parse(item.poolCreatedAt):null);
+  const feedCreatedAt=item.poolCreatedAt?Date.parse(item.poolCreatedAt):null;
+    const pairCreatedAt=Number.isFinite(feedCreatedAt)&&feedCreatedAt>0?feedCreatedAt:market.pairCreatedAt||null;
   const pairAgeHours=pairCreatedAt?Math.max(0,(Date.now()-pairCreatedAt)/3600000):null;
   const candidate={...market,address:item.tokenAddress,symbol:market.symbol||item.symbol||'UNKNOWN',name:market.name||item.name||'Unknown token',pairAgeHours,pairCreatedAt,rugcheck:report,source:item.sources.join(' + '),scannedAt:new Date().toISOString()};
   return {...candidate,...scoreCandidate(candidate,report,historyByAddress[item.tokenAddress]||[],config)};
@@ -139,7 +140,8 @@ export async function discoverCandidates(limit=60,config={},historyByAddress={},
     const [marketResult,report]=await Promise.all([getTokenMarket(item.tokenAddress).then(value=>({value})).catch(error=>({error})),rugcheck(item.tokenAddress)]);
     const market=marketResult.value||geckoMarketFallback(item);
     if(!market)throw new Error('Market data unavailable: '+(marketResult.error?.message||'no usable GeckoTerminal pool snapshot'));
-    const pairCreatedAt=market.pairCreatedAt||(item.poolCreatedAt?Date.parse(item.poolCreatedAt):null);
+    const feedCreatedAt=item.poolCreatedAt?Date.parse(item.poolCreatedAt):null;
+    const pairCreatedAt=Number.isFinite(feedCreatedAt)&&feedCreatedAt>0?feedCreatedAt:market.pairCreatedAt||null;
     const pairAgeHours=pairCreatedAt?Math.max(0,(Date.now()-pairCreatedAt)/3600000):null;
     const candidate={...market,address:item.tokenAddress,symbol:market.symbol||item.symbol||'UNKNOWN',name:market.name||item.name||'Unknown token',pairAgeHours,pairCreatedAt,rugcheck:report,source:item.sources.join(' + '),jupiterOrganicScore:item.jupiterOrganicScore??null,jupiterVerified:item.jupiterVerified??false,jupiterAudit:item.jupiterAudit??null,socialSentiment:item.socialSentiment??null,scannedAt:new Date().toISOString()};
     const scored=scoreCandidate(candidate,report,historyByAddress[item.tokenAddress]||[],config);
