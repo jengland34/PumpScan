@@ -1,166 +1,107 @@
 import { getTokenMarket } from './market.js';
 
 const DEX = 'https://api.dexscreener.com';
-const DEFAULT_SCAN_CONFIG = Object.freeze({
-  minLiquidityUsd: 10000,
-  minVolume5mUsd: 1500,
-  maxPairAgeHours: 72,
-  maxRiskScore: 35,
-  minEntryScore: 55,
-  newLaunchMaxAgeHours: 24
-});
+const GT = 'https://api.geckoterminal.com/api/v2';
+const DEFAULT_SCAN_CONFIG = Object.freeze({ minLiquidityUsd: 10000, minVolume5mUsd: 1500, maxPairAgeHours: 72, maxRiskScore: 35, minEntryScore: 55, newLaunchMaxAgeHours: 24 });
 
-async function json(url) {
-  const response = await fetch(url, {
-    headers: { accept: 'application/json' },
-    signal: AbortSignal.timeout(12000)
-  });
-  if (!response.ok) throw new Error(`Market provider returned ${response.status}`);
+async function json(url, timeout = 12000) {
+  const response = await fetch(url, { headers: { accept: 'application/json', 'user-agent': 'PumpWatch/3.2' }, signal: AbortSignal.timeout(timeout) });
+  if (!response.ok) throw new Error(`Provider returned ${response.status}`);
   return response.json();
 }
-
 async function rugcheck(mint) {
   try {
-    const response = await fetch(`https://api.rugcheck.xyz/v1/tokens/${encodeURIComponent(mint)}/report/summary`, {
-      headers: { accept: 'application/json' },
-      signal: AbortSignal.timeout(10000)
-    });
-    if (!response.ok) return { available: false, risks: [] };
-    const data = await response.json();
-    return {
-      available: true,
-      scoreNormalised: Number.isFinite(Number(data.score_normalised)) ? Number(data.score_normalised) : null,
-      score: Number(data.score),
-      lpLockedPct: data.lpLockedPct == null ? null : Number(data.lpLockedPct),
-      risks: Array.isArray(data.risks) ? data.risks.map(item => ({
-        name: item.name, level: item.level, description: item.description
-      })) : [],
-      mintAuthority: data.mintAuthority ?? null,
-      freezeAuthority: data.freezeAuthority ?? null
-    };
-  } catch {
-    return { available: false, risks: [] };
-  }
+    const data = await json(`https://api.rugcheck.xyz/v1/tokens/${encodeURIComponent(mint)}/report/summary`, 10000);
+    return { available: true, scoreNormalised: Number.isFinite(Number(data.score_normalised)) ? Number(data.score_normalised) : null, score: Number(data.score), lpLockedPct: data.lpLockedPct == null ? null : Number(data.lpLockedPct), risks: Array.isArray(data.risks) ? data.risks.map(x => ({ name:x.name, level:x.level, description:x.description })) : [], mintAuthority:data.mintAuthority??null, freezeAuthority:data.freezeAuthority??null };
+  } catch { return { available:false, risks:[] }; }
 }
+function ratio(a,b){return Number.isFinite(a)&&Number.isFinite(b)&&b>0?a/b:null;}
 
-function ratio(current, previous) {
-  if (!Number.isFinite(current) || !Number.isFinite(previous) || previous <= 0) return null;
-  return current / previous;
-}
-
-/** Pure scoring function, exported for deterministic tests. */
 export function scoreCandidate(market, report, history = [], config = {}) {
-  const cfg = { ...DEFAULT_SCAN_CONFIG, ...config };
-  const ageHours = market.pairAgeHours;
-  const isNewLaunch = ageHours !== null && ageHours <= cfg.newLaunchMaxAgeHours;
-  const model = isNewLaunch ? 'new_launch' : 'established';
-  const riskLevels = (report?.risks || []).map(item => String(item.level || '').toLowerCase());
-  const severeRisk = riskLevels.some(level => ['danger', 'critical'].includes(level));
-  const riskScore = Number.isFinite(report?.scoreNormalised) ? report.scoreNormalised : null;
-
-  // Safety checks are hard gates. Momentum cannot compensate for unsafe/unknown security.
-  const checks = {
-    price: Number.isFinite(market.priceUsd) && market.priceUsd > 0,
-    liquidity: market.liquidityUsd >= cfg.minLiquidityUsd,
-    security: report?.available === true && riskScore !== null && riskScore < cfg.maxRiskScore && !severeRisk,
-    age: ageHours !== null && ageHours >= 0 && ageHours <= cfg.maxPairAgeHours,
-    minimumActivity: market.volume5mUsd >= cfg.minVolume5mUsd
-  };
-
-  const previous = history.length ? history[history.length - 1] : null;
-  const volumeAcceleration = previous ? ratio(market.volume5mUsd, previous.volume5mUsd) : null;
-  const buyerAcceleration = previous ? ratio(market.buys5m, previous.buys5m) : null;
-  const liquidityChangePct = previous && previous.liquidityUsd > 0
-    ? ((market.liquidityUsd / previous.liquidityUsd) - 1) * 100 : null;
-  const buyRatio = market.buys5m + market.sells5m > 0
-    ? market.buys5m / (market.buys5m + market.sells5m) : 0;
-  const priceChange5m = Number(market.priceChange5m || 0);
-
-  const signals = {};
-  if (model === 'new_launch') {
-    // New launches: reward buyer growth and persistent buy-side pressure more heavily.
-    signals.buyPressure = buyRatio >= 0.70 ? 25 : buyRatio >= 0.60 ? 18 : buyRatio >= 0.52 ? 9 : 0;
-    signals.buyerAcceleration = buyerAcceleration === null ? 0 : buyerAcceleration >= 2 ? 25 : buyerAcceleration >= 1.35 ? 17 : buyerAcceleration >= 1.1 ? 8 : 0;
-    signals.volumeAcceleration = volumeAcceleration === null ? 0 : volumeAcceleration >= 2 ? 15 : volumeAcceleration >= 1.35 ? 10 : volumeAcceleration >= 1.1 ? 5 : 0;
-    signals.priceAction = priceChange5m >= 1 && priceChange5m <= 10 ? 10 : priceChange5m > 10 && priceChange5m <= 18 ? 5 : priceChange5m >= 0 && priceChange5m < 1 ? 4 : 0;
-    signals.liquidityStability = liquidityChangePct === null ? 5 : liquidityChangePct >= -2 ? 10 : liquidityChangePct >= -7 ? 4 : 0;
-    signals.activity = market.volume5mUsd >= cfg.minVolume5mUsd * 3 ? 5 : market.volume5mUsd >= cfg.minVolume5mUsd * 1.5 ? 4 : 2;
+  const cfg={...DEFAULT_SCAN_CONFIG,...config}, age=market.pairAgeHours;
+  const model=age!==null&&age<=cfg.newLaunchMaxAgeHours?'new_launch':'established';
+  const levels=(report?.risks||[]).map(x=>String(x.level||'').toLowerCase());
+  const risk=Number.isFinite(report?.scoreNormalised)?report.scoreNormalised:null;
+  const checks={price:Number.isFinite(market.priceUsd)&&market.priceUsd>0,liquidity:Number(market.liquidityUsd)>=cfg.minLiquidityUsd,security:report?.available===true&&risk!==null&&risk<cfg.maxRiskScore&&!levels.some(x=>['danger','critical'].includes(x)),age:age!==null&&age>=0&&age<=cfg.maxPairAgeHours,minimumActivity:Number(market.volume5mUsd)>=cfg.minVolume5mUsd};
+  const prev=history.length?history[history.length-1]:null;
+  const va=prev?ratio(market.volume5mUsd,prev.volume5mUsd):null, ba=prev?ratio(market.buys5m,prev.buys5m):null;
+  const lc=prev&&prev.liquidityUsd>0?(market.liquidityUsd/prev.liquidityUsd-1)*100:null;
+  const buys=Number(market.buys5m)||0,sells=Number(market.sells5m)||0,buyRatio=buys+sells?buys/(buys+sells):0,pc=Number(market.priceChange5m)||0;
+  const signals={};
+  if(model==='new_launch'){
+    signals.buyPressure=buyRatio>=.70?25:buyRatio>=.60?18:buyRatio>=.52?9:0;
+    signals.buyerAcceleration=ba===null?0:ba>=2?25:ba>=1.35?17:ba>=1.1?8:0;
+    signals.volumeAcceleration=va===null?0:va>=2?15:va>=1.35?10:va>=1.1?5:0;
+    signals.priceAction=pc>=1&&pc<=10?10:pc>10&&pc<=18?5:pc>=0&&pc<1?4:0;
+    signals.liquidityStability=lc===null?5:lc>=-2?10:lc>=-7?4:0;
+    signals.activity=market.volume5mUsd>=cfg.minVolume5mUsd*3?5:market.volume5mUsd>=cfg.minVolume5mUsd*1.5?4:2;
   } else {
-    // Established pairs: require stronger volume expansion and a controlled breakout profile.
-    signals.volumeAcceleration = volumeAcceleration === null ? 0 : volumeAcceleration >= 2 ? 25 : volumeAcceleration >= 1.35 ? 18 : volumeAcceleration >= 1.1 ? 8 : 0;
-    signals.buyPressure = buyRatio >= 0.70 ? 15 : buyRatio >= 0.60 ? 11 : buyRatio >= 0.52 ? 5 : 0;
-    signals.buyerAcceleration = buyerAcceleration === null ? 0 : buyerAcceleration >= 2 ? 15 : buyerAcceleration >= 1.35 ? 10 : buyerAcceleration >= 1.1 ? 5 : 0;
-    signals.priceAction = priceChange5m >= 1 && priceChange5m <= 8 ? 20 : priceChange5m > 8 && priceChange5m <= 15 ? 12 : priceChange5m >= 0 && priceChange5m < 1 ? 5 : 0;
-    signals.liquidityStability = liquidityChangePct === null ? 5 : liquidityChangePct >= -2 ? 10 : liquidityChangePct >= -7 ? 4 : 0;
-    signals.activity = market.volume5mUsd >= cfg.minVolume5mUsd * 3 ? 10 : market.volume5mUsd >= cfg.minVolume5mUsd * 1.5 ? 7 : 4;
+    signals.volumeAcceleration=va===null?0:va>=2?25:va>=1.35?18:va>=1.1?8:0;
+    signals.buyPressure=buyRatio>=.70?15:buyRatio>=.60?11:buyRatio>=.52?5:0;
+    signals.buyerAcceleration=ba===null?0:ba>=2?15:ba>=1.35?10:ba>=1.1?5:0;
+    signals.priceAction=pc>=1&&pc<=8?20:pc>8&&pc<=15?12:pc>=0&&pc<1?5:0;
+    signals.liquidityStability=lc===null?5:lc>=-2?10:lc>=-7?4:0;
+    signals.activity=market.volume5mUsd>=cfg.minVolume5mUsd*3?10:market.volume5mUsd>=cfg.minVolume5mUsd*1.5?7:4;
   }
-
-  // Penalise chasing an already vertical move; do not reward a high 5m candle by itself.
-  signals.extensionPenalty = priceChange5m > 30 ? -25 : priceChange5m > 20 ? -12 : 0;
-  const score = Object.values(signals).reduce((sum, value) => sum + value, 0);
-
-  const safetyPassed = checks.price && checks.liquidity && checks.security && checks.age;
-  const historyReady = history.length >= 2;
-  const passed = safetyPassed && checks.minimumActivity && historyReady && score >= cfg.minEntryScore;
-  return {
-    model,
-    modelLabel: model === 'new_launch' ? 'New launch' : 'Established',
-    score,
-    minEntryScore: cfg.minEntryScore,
-    checks,
-    safetyPassed,
-    historyReady,
-    observations: history.length + 1,
-    passed,
-    signals,
-    metrics: { buyRatio, volumeAcceleration, buyerAcceleration, liquidityChangePct }
-  };
+  signals.extensionPenalty=pc>30?-25:pc>20?-12:0;
+  const raw=Object.values(signals).reduce((s,n)=>s+n,0),score=Math.max(0,Math.min(100,raw));
+  const safetyPassed=checks.price&&checks.liquidity&&checks.security&&checks.age,historyReady=history.length>=2;
+  const passed=safetyPassed&&checks.minimumActivity&&historyReady&&score>=cfg.minEntryScore;
+  return {model,modelLabel:model==='new_launch'?'New launch':'Established',score,minEntryScore:cfg.minEntryScore,checks,safetyPassed,historyReady,observations:history.length+1,passed,signals,metrics:{buyRatio,volumeAcceleration:va,buyerAcceleration:ba,liquidityChangePct:lc},rejectionReasons:Object.entries(checks).filter(([,v])=>!v).map(([k])=>k).concat(!historyReady?['history']:[],score<cfg.minEntryScore?['entry_score']:[])};
 }
 
-export async function discoverCandidates(limit = 24, config = {}, historyByAddress = {}) {
-  const [profiles, boosts] = await Promise.allSettled([
+function includedTokenMap(included=[]){return new Map(included.filter(x=>x.type==='token').map(x=>[x.id,x.attributes||{}]));}
+async function discoverySources(){
+  const settled=await Promise.allSettled([
     json(`${DEX}/token-profiles/latest/v1`),
-    json(`${DEX}/token-boosts/latest/v1`)
+    json(`${DEX}/token-boosts/latest/v1`),
+    json(`${GT}/networks/solana/new_pools?include=base_token,quote_token,dex&page=1`)
   ]);
-  const items = [
-    ...(profiles.status === 'fulfilled' && Array.isArray(profiles.value) ? profiles.value : []),
-    ...(boosts.status === 'fulfilled' && Array.isArray(boosts.value) ? boosts.value : [])
-  ];
-  const seen = new Set();
-  const mints = items.filter(item => item.chainId === 'solana' && item.tokenAddress && !seen.has(item.tokenAddress) && seen.add(item.tokenAddress)).slice(0, limit);
-  const rows = [];
-
-  // Keep provider calls sequential to reduce the chance of rate limiting.
-  for (const item of mints) {
-    try {
-      const market = await getTokenMarket(item.tokenAddress);
-      const pairAgeHours = market.pairCreatedAt
-        ? Math.max(0, (Date.now() - market.pairCreatedAt) / 3600000)
-        : null;
-      const report = await rugcheck(item.tokenAddress);
-      const candidate = {
-        ...market,
-        pairAgeHours,
-        rugcheck: report,
-        source: items.some(entry => entry.tokenAddress === item.tokenAddress && entry.amount) ? 'Boosted/profile' : 'Profile',
-        scannedAt: new Date().toISOString()
-      };
-      const scored = scoreCandidate(candidate, report, historyByAddress[item.tokenAddress] || [], config);
-      rows.push({ ...candidate, ...scored });
-    } catch (error) {
-      rows.push({
-        address: item.tokenAddress,
-        symbol: item.symbol || 'UNKNOWN',
-        name: item.name || 'Unknown token',
-        error: error.message,
-        passed: false,
-        safetyPassed: false,
-        score: 0,
-        checks: { price: false, liquidity: false, security: false, age: false, minimumActivity: false }
-      });
+  const [profiles,boosts,pools]=settled;
+  const rows=new Map();
+  const add=(address,meta,source,poolCreatedAt=null)=>{
+    if(!address)return;
+    const old=rows.get(address)||{tokenAddress:address,sources:[],symbol:meta?.symbol,name:meta?.name,poolCreatedAt};
+    if(!old.sources.includes(source))old.sources.push(source);
+    if(!old.symbol&&meta?.symbol)old.symbol=meta.symbol;
+    if(!old.name&&meta?.name)old.name=meta.name;
+    if(!old.poolCreatedAt&&poolCreatedAt)old.poolCreatedAt=poolCreatedAt;
+    rows.set(address,old);
+  };
+  if(profiles.status==='fulfilled'&&Array.isArray(profiles.value))for(const x of profiles.value)if(x.chainId==='solana')add(x.tokenAddress,x,'DexScreener profile');
+  if(boosts.status==='fulfilled'&&Array.isArray(boosts.value))for(const x of boosts.value)if(x.chainId==='solana')add(x.tokenAddress,x,'DexScreener boost');
+  if(pools.status==='fulfilled'){
+    const data=pools.value?.data||[],tokens=includedTokenMap(pools.value?.included);
+    for(const pool of data){
+      const rel=pool.relationships?.base_token?.data,quote=pool.relationships?.quote_token?.data;
+      const base=tokens.get(rel?.id),q=tokens.get(quote?.id);
+      const baseAddress=base?.address||rel?.id?.replace(/^solana_/,'');
+      const quoteAddress=q?.address||quote?.id?.replace(/^solana_/,'');
+      const a=pool.attributes||{},created=a.pool_created_at||null;
+      // Avoid treating wrapped SOL/stablecoin quote assets as the speculative token.
+      const quoteSym=String(q?.symbol||'').toUpperCase();
+      const token=(baseAddress&&baseAddress!==quoteAddress)?{address:baseAddress,meta:base}:null;
+      if(token)add(token.address,token.meta||{},'GeckoTerminal new pool',created);
+      else if(quoteAddress)add(quoteAddress,q||{},'GeckoTerminal new pool',created);
     }
   }
+  return {rows:[...rows.values()],sourceStatus:{profiles:profiles.status,boosts:boosts.status,newPools:pools.status}};
+}
+async function mapLimit(items,concurrency,fn){const out=new Array(items.length);let next=0;await Promise.all(Array.from({length:Math.min(concurrency,items.length)},async()=>{while(true){const i=next++;if(i>=items.length)return;try{out[i]=await fn(items[i])}catch(e){out[i]={address:items[i].tokenAddress,symbol:items[i].symbol||'UNKNOWN',name:items[i].name||'Unknown token',source:items[i].sources.join(' + '),error:e.message,passed:false,safetyPassed:false,score:0,checks:{price:false,liquidity:false,security:false,age:false,minimumActivity:false},rejectionReasons:['market_data']};}}}));return out;}
 
-  rows.sort((a, b) => Number(b.passed) - Number(a.passed) || b.score - a.score || b.volume5mUsd - a.volume5mUsd);
-  return rows;
+export async function discoverCandidates(limit=60,config={},historyByAddress={}){
+  const {rows,sourceStatus}=await discoverySources();
+  const selected=rows.slice(0,Math.max(limit,1));
+  const candidates=await mapLimit(selected,4,async item=>{
+    const market=await getTokenMarket(item.tokenAddress);
+    const pairCreatedAt=market.pairCreatedAt||(item.poolCreatedAt?Date.parse(item.poolCreatedAt):null);
+    const pairAgeHours=pairCreatedAt?Math.max(0,(Date.now()-pairCreatedAt)/3600000):null;
+    const report=await rugcheck(item.tokenAddress);
+    const candidate={...market,address:item.tokenAddress,symbol:market.symbol||item.symbol||'UNKNOWN',name:market.name||item.name||'Unknown token',pairAgeHours,pairCreatedAt,rugcheck:report,source:item.sources.join(' + '),scannedAt:new Date().toISOString()};
+    const scored=scoreCandidate(candidate,report,historyByAddress[item.tokenAddress]||[],config);
+    return {...candidate,...scored};
+  });
+  for(const c of candidates){c.sourceStatus=sourceStatus;if(!c.rejectionReasons)c.rejectionReasons=['market_data'];}
+  candidates.sort((a,b)=>Number(b.passed)-Number(a.passed)||b.score-a.score||(Number(b.volume5mUsd)||0)-(Number(a.volume5mUsd)||0));
+  return candidates;
 }
