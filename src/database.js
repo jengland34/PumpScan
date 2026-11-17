@@ -25,7 +25,9 @@ export async function initialiseDatabase(){
     CREATE UNIQUE INDEX IF NOT EXISTS scan_runs_started_idx ON scan_runs(started_at);
     CREATE TABLE IF NOT EXISTS paper_trades(id TEXT PRIMARY KEY,address TEXT,symbol TEXT,type TEXT NOT NULL,occurred_at TIMESTAMPTZ NOT NULL,realised_pnl_gbp DOUBLE PRECISION,payload JSONB NOT NULL);
     CREATE INDEX IF NOT EXISTS paper_trades_occurred_idx ON paper_trades(occurred_at DESC);
-    CREATE TABLE IF NOT EXISTS risk_assessments(address TEXT NOT NULL,assessed_at TIMESTAMPTZ NOT NULL,score DOUBLE PRECISION,available BOOLEAN,payload JSONB NOT NULL,PRIMARY KEY(address,assessed_at));\n    CREATE TABLE IF NOT EXISTS v4_signals(id TEXT PRIMARY KEY,mint TEXT NOT NULL,model TEXT NOT NULL,status TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL,updated_at TIMESTAMPTZ NOT NULL,payload JSONB NOT NULL);\n    CREATE INDEX IF NOT EXISTS v4_signals_created_idx ON v4_signals(created_at DESC);
+    CREATE TABLE IF NOT EXISTS risk_assessments(address TEXT NOT NULL,assessed_at TIMESTAMPTZ NOT NULL,score DOUBLE PRECISION,available BOOLEAN,payload JSONB NOT NULL,PRIMARY KEY(address,assessed_at));
+    CREATE TABLE IF NOT EXISTS v4_signals(id TEXT PRIMARY KEY,mint TEXT NOT NULL,model TEXT NOT NULL,status TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL,updated_at TIMESTAMPTZ NOT NULL,payload JSONB NOT NULL);
+    CREATE INDEX IF NOT EXISTS v4_signals_created_idx ON v4_signals(created_at DESC);
     CREATE INDEX IF NOT EXISTS risk_assessments_time_idx ON risk_assessments(assessed_at DESC);
   `);
   status={configured:true,connected:true,lastWriteAt:null,lastError:null};return pool;
