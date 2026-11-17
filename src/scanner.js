@@ -33,15 +33,15 @@ export function scoreCandidate(market, report, history = [], config = {}) {
     signals.buyerAcceleration=ba===null?0:ba>=2?25:ba>=1.35?17:ba>=1.1?8:0;
     signals.volumeAcceleration=va===null?0:va>=2?15:va>=1.35?10:va>=1.1?5:0;
     signals.priceAction=Number.isFinite(pc)?(pc>=1&&pc<=10?10:pc>10&&pc<=18?5:pc>=0&&pc<1?4:0):0;
-    signals.liquidityStability=lc===null?5:lc>=-2?10:lc>=-7?4:0;
-    signals.activity=market.volume5mUsd>=cfg.minVolume5mUsd*3?5:market.volume5mUsd>=cfg.minVolume5mUsd*1.5?4:2;
+    signals.liquidityStability=lc===null?0:lc>=-2?10:lc>=-7?4:0;
+    signals.activity=Number.isFinite(Number(market.volume5mUsd))? (market.volume5mUsd>=cfg.minVolume5mUsd*3?5:market.volume5mUsd>=cfg.minVolume5mUsd*1.5?4:market.volume5mUsd>=cfg.minVolume5mUsd?2:0):0;
   } else {
     signals.volumeAcceleration=va===null?0:va>=2?25:va>=1.35?18:va>=1.1?8:0;
     signals.buyPressure=!hasFlow?0:buyRatio>=.70?15:buyRatio>=.60?11:buyRatio>=.52?5:0;
     signals.buyerAcceleration=ba===null?0:ba>=2?15:ba>=1.35?10:ba>=1.1?5:0;
     signals.priceAction=Number.isFinite(pc)?(pc>=1&&pc<=8?20:pc>8&&pc<=15?12:pc>=0&&pc<1?5:0):0;
-    signals.liquidityStability=lc===null?5:lc>=-2?10:lc>=-7?4:0;
-    signals.activity=market.volume5mUsd>=cfg.minVolume5mUsd*3?10:market.volume5mUsd>=cfg.minVolume5mUsd*1.5?7:4;
+    signals.liquidityStability=lc===null?0:lc>=-2?10:lc>=-7?4:0;
+    signals.activity=Number.isFinite(Number(market.volume5mUsd))? (market.volume5mUsd>=cfg.minVolume5mUsd*3?10:market.volume5mUsd>=cfg.minVolume5mUsd*1.5?7:market.volume5mUsd>=cfg.minVolume5mUsd?4:0):0;
   }
   signals.extensionPenalty=Number.isFinite(pc)?(pc>30?-25:pc>20?-12:0):0;
   const raw=Object.values(signals).reduce((s,n)=>s+n,0),score=Math.max(0,Math.min(100,raw));
