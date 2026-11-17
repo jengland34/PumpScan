@@ -128,7 +128,7 @@ export async function refreshCandidates(items=[],config={},historyByAddress={}){
  const candidates=await mapLimit(selected,3,async item=>{
   const [marketResult,report]=await Promise.all([Promise.resolve(marketResults.get(item.tokenAddress)||{error:new Error('Market data result missing')}),rugcheck(item.tokenAddress)]);
   let market=marketResult.value;
-  if((!market||market.dataStatus==='stale')&&item.geckoPool?.address){
+  if((!market||market.dataStatus==='stale'||market.dataStatus==='partial')&&item.geckoPool?.address){
     try {
       const response=await json(GT+'/networks/solana/pools/'+encodeURIComponent(item.geckoPool.address)+'?include=base_token,quote_token,dex',10000);
       const a=response.data?.attributes||response.attributes||{};
