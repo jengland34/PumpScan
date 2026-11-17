@@ -42,8 +42,8 @@ async function discoveryScan(){if(discoveryBusy)return;discoveryBusy=true;try{
  // Oldest/never-evaluated candidates go first; score rank cannot monopolise the batch.
  const pool=Object.values(state.candidatePool).filter(c=>c.address&&!freshIds.has(c.address));
  pool.sort((a,b)=>{
-   const ta=Date.parse(a.lastSuccessfulEvaluationAt||a.lastEvaluatedAt||a.lastDiscoveredAt||0)||0;
-   const tb=Date.parse(b.lastSuccessfulEvaluationAt||b.lastEvaluatedAt||b.lastDiscoveredAt||0)||0;
+   const ta=Date.parse(a.lastRefreshAttemptAt||a.lastAttemptAt||a.lastDiscoveredAt||0)||0;
+   const tb=Date.parse(b.lastRefreshAttemptAt||b.lastAttemptAt||b.lastDiscoveredAt||0)||0;
    return ta-tb;
  });
  const cursor=Number(state.refreshCursor||0),startIndex=pool.length?cursor%pool.length:0;
