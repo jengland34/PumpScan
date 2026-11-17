@@ -16,7 +16,8 @@ export function detectIgnition(f,risk={}){
   notOverextended:Number.isFinite(priceMove)&&priceMove>=-5&&priceMove<=12,
   security:risk.available===true&&risk.passed===true,
   liquidity:risk.liquidityPassed===true,
-  marketData:risk.marketDataFresh===true
+  marketData:risk.marketDataFresh===true,
+  liquidityStability:risk.liquidityShock!==true
  };
  if(gates.sample)reasons.push('3+ trades in one minute');
  if(gates.buyerCount)reasons.push('At least 3 distinct buyers');
@@ -25,6 +26,7 @@ export function detectIgnition(f,risk={}){
  if(gates.netBuying)reasons.push('At least $100 net buying in one minute');
  if(gates.concentration)reasons.push('No single buyer controls the flow');
  if(gates.notOverextended)reasons.push('Price move remains early, not extended');
+ if(gates.liquidityStability)reasons.push('No sharp liquidity withdrawal observed');
  return result('ignition',gates,reasons,f,'v4-ignition-0.3');
 }
 export function detectMomentum(f,risk={}){
@@ -40,7 +42,8 @@ export function detectMomentum(f,risk={}){
   notExhausted:Number.isFinite(priceMove)&&priceMove<=18,
   security:risk.available===true&&risk.passed===true,
   liquidity:risk.liquidityPassed===true,
-  marketData:risk.marketDataFresh===true
+  marketData:risk.marketDataFresh===true,
+  liquidityStability:risk.liquidityShock!==true
  };
  if(gates.sample)reasons.push('10+ trades in five minutes');
  if(gates.buyPressure)reasons.push('Buy/sell value ratio at least 1.25×');
@@ -50,5 +53,6 @@ export function detectMomentum(f,risk={}){
  if(gates.concentration)reasons.push('Buyer concentration controlled');
  if(gates.positiveMove)reasons.push('Positive five-minute price momentum');
  if(gates.notExhausted)reasons.push('Move not yet excessively extended');
+ if(gates.liquidityStability)reasons.push('No sharp liquidity withdrawal observed');
  return result('momentum',gates,reasons,f,'v4-momentum-0.3');
 }

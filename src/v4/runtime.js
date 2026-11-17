@@ -4,7 +4,7 @@ import { detectIgnition, detectMomentum } from './detectors.js';
 import { createShrineStream } from './shrine.js';
 import { getTokenMarket, getTokenMarkets } from '../market.js';
 
-const buffer=createEventBuffer(),latestFeatures=new Map(),launches=new Map(),signals=new Map(),riskCache=new Map(),evaluating=new Set();
+const buffer=createEventBuffer(),latestFeatures=new Map(),launches=new Map(),signals=new Map(),riskCache=new Map(),liquidityObservations=new Map(),evaluating=new Set();
 const status={provider:'shrine',state:'not_started',received:0,persisted:0,lastEventAt:null,lastError:null,launches:0,signals:0,riskChecks:0,riskPasses:0,riskFailures:0,liquidityPasses:0,liquidityFailures:0,marketFailures:0};
 let stream=null,persistEvent=async()=>{},persistSignal=async()=>{};
 const SIGNAL_COOLDOWN_MS=15*60_000,MAX_SIGNALS=2000,MIN_LIQUIDITY_USD=5000,MAX_NORMALISED_RISK=40;
@@ -65,13 +65,19 @@ export async function refreshV4SignalOutcomes(limit=60){
  for(const signal of rows){const market=results.get(signal.mint)?.value;if(!market?.priceUsd||['stale','partial'].includes(market.dataStatus))continue;updateSignalOutcome(signal,market,now);updated++;}
  return updated;
 }
+function assessLiquidityTrend(mint,market,risk){
+ const now=Date.now(),liquidity=Number(market?.liquidityUsd||0),previous=liquidityObservations.get(mint);let change=null,sampleAgeMs=null,shock=false;
+ if(previous&&previous.liquidityUsd>0&&now-previous.at<=5*60_000){change=(liquidity/previous.liquidityUsd-1)*100;sampleAgeMs=now-previous.at;shock=change<=-20;}
+ if(liquidity>0)liquidityObservations.set(mint,{liquidityUsd:liquidity,at:now});
+ return{...risk,liquidityChangePct:change,liquidityTrendSampleAgeMs:sampleAgeMs,liquidityShock:shock,liquidityPassed:risk.liquidityPassed&&!shock};
+}
 async function evaluateMint(mint){
  if(evaluating.has(mint))return;evaluating.add(mint);
  try{
   const features=latestFeatures.get(mint);if(!features)return;
   const market=await getTokenMarket(mint);
   if(market.dataStatus==='stale'||market.dataStatus==='partial'||!market.priceUsd){status.marketFailures++;return;}
-  const risk=await assessRisk(mint,market);
+  const risk=assessLiquidityTrend(mint,market,await assessRisk(mint,market));
   const evaluated={...features,latestPriceUsd:market.priceUsd,symbol:features.symbol||market.symbol||'UNKNOWN',market:{priceUsd:market.priceUsd,liquidityUsd:market.liquidityUsd,volume5mUsd:market.volume5mUsd,priceChange5m:market.priceChange5m,dataStatus:market.dataStatus,source:market.marketDataSource},risk};
   const ignition=detectIgnition(evaluated,risk),momentum=detectMomentum(evaluated,risk);
   evaluated.ignition=ignition;evaluated.momentum=momentum;
@@ -92,7 +98,7 @@ export function startV4({apiKey=process.env.SHRINE_API_KEY,saveEvent=async()=>{}
  },onStatus:next=>Object.assign(status,next)});return stream;
 }
 export function stopV4(){stream?.stop();stream=null;}
-export function v4Status(){return{...status,trackedTokens:buffer.tokens().length,discoveredLaunches:launches.size,mode:'paper',liveTradingAvailable:false,signalPublicationEnabled:true,signalModels:['ignition','momentum'],riskProvider:'RugCheck',liquidityProvider:'DexScreener',liquidityFloorUsd:MIN_LIQUIDITY_USD,maxNormalisedRisk:MAX_NORMALISED_RISK};}
+export function v4Status(){return{...status,trackedTokens:buffer.tokens().length,discoveredLaunches:launches.size,mode:'paper',liveTradingAvailable:false,signalPublicationEnabled:true,signalModels:['ignition','momentum'],riskProvider:'RugCheck',liquidityProvider:'DexScreener',liquidityFloorUsd:MIN_LIQUIDITY_USD,maxNormalisedRisk:MAX_NORMALISED_RISK,liquidityShockThresholdPct:-20};}
 export function v4Features(mint){return latestFeatures.get(mint)||null;}
 export function v4TopActivity(limit=50){return[...latestFeatures.values()].sort((a,b)=>(b.netBuyUsd1m||0)-(a.netBuyUsd1m||0)).slice(0,limit);}
 export function v4RecentLaunches(limit=100){return[...launches.values()].slice(-limit).reverse();}
