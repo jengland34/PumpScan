@@ -121,7 +121,7 @@ export async function refreshCandidates(items=[],config={},historyByAddress={}){
  const candidates=await mapLimit(selected,3,async item=>{
   const [marketResult,report]=await Promise.all([getTokenMarket(item.tokenAddress).then(value=>({value})).catch(error=>({error})),rugcheck(item.tokenAddress)]);
   const market=marketResult.value;
-  if(!market)throw new Error('Market data unavailable: '+(marketResult.error?.message||'no market snapshot'));
+  if(!market||market.dataStatus==='stale')throw new Error('Market data unavailable or stale: '+(market?.dataError||marketResult.error?.message||'no fresh market snapshot'));
   const feedCreatedAt=item.poolCreatedAt?Date.parse(item.poolCreatedAt):null;
     const pairCreatedAt=Number.isFinite(feedCreatedAt)&&feedCreatedAt>0?feedCreatedAt:market.pairCreatedAt||null;
   const pairAgeHours=pairCreatedAt?Math.max(0,(Date.now()-pairCreatedAt)/3600000):null;
@@ -139,7 +139,7 @@ export async function discoverCandidates(limit=60,config={},historyByAddress={},
   const candidates=await mapLimit(selected,3,async item=>{
     const [marketResult,report]=await Promise.all([getTokenMarket(item.tokenAddress).then(value=>({value})).catch(error=>({error})),rugcheck(item.tokenAddress)]);
     const market=marketResult.value||geckoMarketFallback(item);
-    if(!market)throw new Error('Market data unavailable: '+(marketResult.error?.message||'no usable GeckoTerminal pool snapshot'));
+    if(!market||market.dataStatus==='stale')throw new Error('Market data unavailable or stale: '+(market?.dataError||marketResult.error?.message||'no fresh usable market snapshot'));
     const feedCreatedAt=item.poolCreatedAt?Date.parse(item.poolCreatedAt):null;
     const pairCreatedAt=Number.isFinite(feedCreatedAt)&&feedCreatedAt>0?feedCreatedAt:market.pairCreatedAt||null;
     const pairAgeHours=pairCreatedAt?Math.max(0,(Date.now()-pairCreatedAt)/3600000):null;
