@@ -87,7 +87,7 @@ export async function discoverCandidates(limit=60,config={},historyByAddress={})
   });
   for(const c of candidates){c.sourceStatus=sourceStatus;if(!c.rejectionReasons)c.rejectionReasons=['market_data'];}
   addPeerCorrelation(candidates,historyByAddress);
-  candidates.sort((a,b)=>Number(b.passed)-Number(a.passed)||(b.score+(b.localCorrelation?.rankBoost||0))-(a.score+(a.localCorrelation?.rankBoost||0))||(Number(b.volume5mUsd)||0)-(Number(a.volume5mUsd)||0));
+  candidates.sort((a,b)=>Number(b.passed)-Number(a.passed)||((b.score+(b.localCorrelation?.rankBoost||0)+(b.socialSentiment?.mentions>=3&&b.socialSentiment?.uniqueAuthors>=2&&b.socialSentiment?.score>0?Math.min(4,b.socialSentiment.mentions):0)+(b.jupiterOrganicScore>=60?2:0))-(a.score+(a.localCorrelation?.rankBoost||0)+(a.socialSentiment?.mentions>=3&&a.socialSentiment?.uniqueAuthors>=2&&a.socialSentiment?.score>0?Math.min(4,a.socialSentiment.mentions):0)+(a.jupiterOrganicScore>=60?2:0)))||(Number(b.volume5mUsd)||0)-(Number(a.volume5mUsd)||0));
   candidates.sourceStatus=sourceStatus;
   return candidates;
 }
