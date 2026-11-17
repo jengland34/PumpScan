@@ -62,13 +62,21 @@ function sentiment(t){t=t.toLowerCase();const p=['bullish','moon','pump','breako
 async function discoverySources(){
  const [profiles,boosts,pools]=await Promise.all([provider('dex-profile',DEX+'/token-profiles/latest/v1'),provider('dex-boost',DEX+'/token-boosts/latest/v1'),provider('gecko',GT+'/networks/solana/new_pools?include=base_token,quote_token,dex&page=1')]);
  const [jup,red]=await Promise.all([jupiterFeeds(),redditFeed()]),rows=new Map();
- const add=(id,m,src,created=null)=>{if(!id)return;const x=rows.get(id)||{tokenAddress:id,sources:[],symbol:m?.symbol,name:m?.name,poolCreatedAt:created};if(!x.sources.includes(src))x.sources.push(src);x.symbol=x.symbol||m?.symbol;x.name=x.name||m?.name;x.poolCreatedAt=x.poolCreatedAt||created;if(m?.organicScore!==undefined)x.jupiterOrganicScore=Number(m.organicScore);if(m?.isVerified!==undefined)x.jupiterVerified=!!m.isVerified;if(m?.audit)x.jupiterAudit=m.audit;rows.set(id,x);};
+ const add=(id,m,src,created=null,pool=null)=>{if(!id)return;const x=rows.get(id)||{tokenAddress:id,sources:[],symbol:m?.symbol,name:m?.name,poolCreatedAt:created};if(!x.sources.includes(src))x.sources.push(src);x.symbol=x.symbol||m?.symbol;x.name=x.name||m?.name;x.poolCreatedAt=x.poolCreatedAt||created;if(pool&&!x.geckoPool)x.geckoPool=pool;if(m?.organicScore!==undefined)x.jupiterOrganicScore=Number(m.organicScore);if(m?.isVerified!==undefined)x.jupiterVerified=!!m.isVerified;if(m?.audit)x.jupiterAudit=m.audit;rows.set(id,x);};
  if(Array.isArray(profiles.value))for(const x of profiles.value)if(x.chainId==='solana')add(x.tokenAddress,x,'DexScreener profiles');
  if(Array.isArray(boosts.value))for(const x of boosts.value)if(x.chainId==='solana')add(x.tokenAddress,x,'DexScreener boosts');
- if(pools.value)for(const p of pools.value.data||[]){const rel=p.relationships?.base_token?.data,b=includedTokenMap(pools.value.included).get(rel?.id),id=b?.address||rel?.id?.replace(/^solana_/,'');if(id)add(id,b||{},'GeckoTerminal pools',p.attributes?.pool_created_at||null);}
+ if(pools.value)for(const p of pools.value.data||[]){const rel=p.relationships?.base_token?.data,b=includedTokenMap(pools.value.included).get(rel?.id),id=b?.address||rel?.id?.replace(/^solana_/,'');if(id)add(id,b||{},'GeckoTerminal pools',p.attributes?.pool_created_at||null,p.attributes||null);}
  for(const f of jup)if(Array.isArray(f.value))for(const x of f.value)add(x.id,x,'Jupiter '+f.name);
  for(const x of rows.values()){const sym=String(x.symbol||'').trim().replace(/[^a-z0-9]/gi,''),name=String(x.name||'').trim();if(sym.length<3)continue;const hits=red.items.filter(y=>{const t=y.text;return new RegExp('(^|[^a-z0-9])'+sym+'([^a-z0-9]|$)','i').test(t)||(name.length>4&&t.toLowerCase().includes(name.toLowerCase()));}),ss=hits.map(y=>sentiment(y.text));x.socialSentiment={provider:'Reddit RSS',status:red.status,mentions:hits.length,uniqueAuthors:new Set(hits.map(y=>y.author).filter(Boolean)).size,score:ss.length?Math.round(ss.reduce((a,z)=>a+z.score,0)/ss.length):0,positive:ss.reduce((a,z)=>a+z.p,0),negative:ss.reduce((a,z)=>a+z.n,0),checkedAt:red.checkedAt};}
  return{rows:[...rows.values()],sourceStatus:{profiles:{status:profiles.status,count:profiles.value?.length||0,error:profiles.error},boosts:{status:boosts.status,count:boosts.value?.length||0,error:boosts.error},newPools:{status:pools.status,count:pools.value?.data?.length||0,error:pools.error},jupiter:Object.fromEntries(jup.map(x=>[x.name,{status:x.status,count:x.value?.length||0,error:x.error}])),reddit:{status:red.status,count:red.items?.length||0,error:red.error}}};
+}
+function geckoMarketFallback(item){
+ const p=item.geckoPool;if(!p)return null;
+ const n=v=>{const x=Number(v);return Number.isFinite(x)?x:0;};
+ const volume=p.volume_usd||{},change=p.price_change_percentage||{},tx=p.transactions||{},m5=tx.m5||{};
+ const price=n(p.base_token_price_usd),liquidity=n(p.reserve_in_usd);
+ if(!(price>0))return null;
+ return {address:item.tokenAddress,name:item.name||'Unknown token',symbol:item.symbol||'TOKEN',priceUsd:price,liquidityUsd:liquidity,volume24hUsd:n(volume.h24),marketCapUsd:0,pairAddress:p.address||null,dexId:p.dex_id||'GeckoTerminal',url:null,priceChange24h:n(change.h24),priceChange5m:n(change.m5),volume5mUsd:n(volume.m5),buys5m:n(m5.buys),sells5m:n(m5.sells),pairCreatedAt:p.pool_created_at?Date.parse(p.pool_created_at):null,marketDataSource:'GeckoTerminal fallback',fetchedAt:new Date().toISOString()};
 }
 async function mapLimit(items,concurrency,fn){const out=new Array(items.length);let next=0;await Promise.all(Array.from({length:Math.min(concurrency,items.length)},async()=>{while(true){const i=next++;if(i>=items.length)return;try{out[i]=await fn(items[i])}catch(e){out[i]={address:items[i].tokenAddress,symbol:items[i].symbol||'UNKNOWN',name:items[i].name||'Unknown token',source:items[i].sources.join(' + '),error:e.message,passed:false,safetyPassed:false,score:0,checks:{price:false,liquidity:false,security:false,age:false,minimumActivity:false},rejectionReasons:['market_data']};}}}));return out;}
 
@@ -78,7 +86,7 @@ export async function discoverCandidates(limit=60,config={},historyByAddress={})
   if(!rows.length)throw new Error('Discovery providers returned no Solana tokens. Provider status: '+JSON.stringify(sourceStatus));
   const selected=rows.slice(0,Math.max(limit,1));
   const candidates=await mapLimit(selected,3,async item=>{
-    const [market,report]=await Promise.all([getTokenMarket(item.tokenAddress),rugcheck(item.tokenAddress)]);
+    const [marketResult,report]=await Promise.all([getTokenMarket(item.tokenAddress).then(value=>({value})).catch(error=>({error})),rugcheck(item.tokenAddress)]);\n    const market=marketResult.value||geckoMarketFallback(item);\n    if(!market)throw new Error('Market data unavailable: '+(marketResult.error?.message||'no usable GeckoTerminal pool snapshot'));
     const pairCreatedAt=market.pairCreatedAt||(item.poolCreatedAt?Date.parse(item.poolCreatedAt):null);
     const pairAgeHours=pairCreatedAt?Math.max(0,(Date.now()-pairCreatedAt)/3600000):null;
     const candidate={...market,address:item.tokenAddress,symbol:market.symbol||item.symbol||'UNKNOWN',name:market.name||item.name||'Unknown token',pairAgeHours,pairCreatedAt,rugcheck:report,source:item.sources.join(' + '),jupiterOrganicScore:item.jupiterOrganicScore??null,jupiterVerified:item.jupiterVerified??false,jupiterAudit:item.jupiterAudit??null,socialSentiment:item.socialSentiment??null,scannedAt:new Date().toISOString()};
