@@ -99,3 +99,15 @@ export async function v4SignalStats() {
   const {rows}=await pool.query(`SELECT count(*)::bigint AS count,count(*) FILTER (WHERE status='active')::bigint AS active FROM v4_signals`);
   return {configured:true,count:Number(rows[0]?.count||0),active:Number(rows[0]?.active||0)};
 }
+
+
+/** Read the durable, shared signal history. The database is the source of truth;
+ * the in-memory runtime map is only a working cache for the single MVP engine. */
+export async function loadV4Signals(limit=2000) {
+  if (!pool) return [];
+  const {rows}=await pool.query(
+    'SELECT payload FROM v4_signals ORDER BY created_at DESC LIMIT $1',
+    [Math.max(1,Math.min(5000,Number(limit)||2000))]
+  );
+  return rows.map(row=>row.payload).filter(Boolean);
+}
