@@ -1,8 +1,7 @@
 // Shared conservative limiter for every DexPaprika REST call in this process.
 // Keyless limits are shared by outbound IP, so do not burst per-token fallback calls.
-const MIN_INTERVAL_MS = 8_500;
-const MAX_PER_MINUTE = 6;
 const WINDOW_MS = 60_000;
+const LIMITS = { keyed: { minIntervalMs: 1_250, maxPerMinute: 48 }, keyless: { minIntervalMs: 4_100, maxPerMinute: 14 } };
 let queue = Promise.resolve();
 let lastRequestAt = 0;
 let requestTimes = [];
@@ -20,16 +19,18 @@ function retryAfterMs(response) {
 
 export function dexPaprikaFetch(url, options = {}) {
   const task = queue.then(async () => {
+    const keyed = Boolean(process.env.DEXPAPRIKA_API_KEY);
+    const limits = keyed ? LIMITS.keyed : LIMITS.keyless;
     const now = Date.now();
     if (now < blockedUntil) throw new Error('DexPaprika cooldown (' + Math.ceil((blockedUntil - now) / 1000) + 's remaining): ' + blockedReason);
     requestTimes = requestTimes.filter(t => now - t < WINDOW_MS);
-    if (requestTimes.length >= MAX_PER_MINUTE) throw new Error('DexPaprika safety limit reached (6 requests/minute); waiting for next window');
-    const wait = Math.max(0, MIN_INTERVAL_MS - (now - lastRequestAt));
+    if (requestTimes.length >= limits.maxPerMinute) throw new Error('DexPaprika local safety limit reached (' + limits.maxPerMinute + ' requests/minute); waiting for next window');
+    const wait = Math.max(0, limits.minIntervalMs - (now - lastRequestAt));
     if (wait) await new Promise(resolve => setTimeout(resolve, wait));
     const afterWait = Date.now();
     if (afterWait < blockedUntil) throw new Error('DexPaprika cooldown (' + Math.ceil((blockedUntil - afterWait) / 1000) + 's remaining): ' + blockedReason);
     requestTimes = requestTimes.filter(t => afterWait - t < WINDOW_MS);
-    if (requestTimes.length >= MAX_PER_MINUTE) throw new Error('DexPaprika safety limit reached (6 requests/minute); waiting for next window');
+    if (requestTimes.length >= limits.maxPerMinute) throw new Error('DexPaprika safety limit reached (6 requests/minute); waiting for next window');
     lastRequestAt = afterWait;
     requestTimes.push(afterWait);
     const headers = { accept: 'application/json', 'user-agent': 'PumpWatch/4.0', ...(options.headers || {}) };
@@ -49,5 +50,5 @@ export function dexPaprikaFetch(url, options = {}) {
 export function dexPaprikaLimiterStatus() {
   const now = Date.now();
   requestTimes = requestTimes.filter(t => now - t < WINDOW_MS);
-  return { requestsLastMinute: requestTimes.length, maxPerMinute: MAX_PER_MINUTE, cooldownSeconds: Math.max(0, Math.ceil((blockedUntil - now) / 1000)) };
+  return { requestsLastMinute: requestTimes.length, maxPerMinute: process.env.DEXPAPRIKA_API_KEY ? LIMITS.keyed.maxPerMinute : LIMITS.keyless.maxPerMinute, cooldownSeconds: Math.max(0, Math.ceil((blockedUntil - now) / 1000)) };
 }
