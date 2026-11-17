@@ -66,9 +66,9 @@ export async function refreshV4SignalOutcomes(limit=60){
  return updated;
 }
 function assessLiquidityTrend(mint,market,risk){
- const now=Date.now(),liquidity=Number(market?.liquidityUsd||0),previous=liquidityObservations.get(mint);let change=null,sampleAgeMs=null,shock=false;
- if(previous&&previous.liquidityUsd>0&&now-previous.at<=5*60_000){change=(liquidity/previous.liquidityUsd-1)*100;sampleAgeMs=now-previous.at;shock=change<=-20;}
- if(liquidity>0)liquidityObservations.set(mint,{liquidityUsd:liquidity,at:now});
+ const now=Date.now(),liquidity=Number(market?.liquidityUsd||0),previous=liquidityObservations.get(mint);let change=null,sampleAgeMs=null,shock=!!(previous?.shockUntil&&previous.shockUntil>now);
+ if(previous&&previous.liquidityUsd>0&&now-previous.at<=5*60_000){change=(liquidity/previous.liquidityUsd-1)*100;sampleAgeMs=now-previous.at;if(change<=-20)shock=true;}
+ if(liquidity>0)liquidityObservations.set(mint,{liquidityUsd:liquidity,at:now,shockUntil:shock?(previous?.shockUntil>now?previous.shockUntil:now+5*60_000):0});
  return{...risk,liquidityChangePct:change,liquidityTrendSampleAgeMs:sampleAgeMs,liquidityShock:shock,liquidityPassed:risk.liquidityPassed&&!shock};
 }
 async function evaluateMint(mint){
